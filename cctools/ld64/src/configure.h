@@ -34,11 +34,10 @@
 #define SUPPORT_ARCH_armv7k 1
 #define SUPPORT_ARCH_armv7m 1
 #define SUPPORT_ARCH_armv7em 1
-#define SUPPORT_ARCH_riscv32 1
 
 #define SUPPORT_APPLE_TV 1
 
-#define ALL_SUPPORTED_ARCHS  "armv6 armv7 armv7s arm64 arm64e arm64_32 i386 x86_64 x86_64h armv6m armv7k armv7m armv7em riscv32 (tvOS)"
+#define ALL_SUPPORTED_ARCHS  "armv6 armv7 armv7s arm64 arm64e arm64_32 i386 x86_64 x86_64h armv6m armv7k armv7m armv7em (tvOS)"
 
 #define BITCODE_XAR_VERSION "1.0"
 
