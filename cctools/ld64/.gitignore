@@ -1,3 +1,5 @@
 /src/ld/ld
 /src/other/ObjectDump
 /src/other/unwinddump
+/src/other/dyldinfo
+/src/other/machocheck

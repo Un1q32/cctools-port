@@ -18,7 +18,7 @@ if test "x$CXXFLAGS" = "x"; then
   CXXFLAGS="-O3"
 fi
 
-CXXFLAGS="$CXXFLAGS -std=c++2a"
+CXXFLAGS="$CXXFLAGS -std=c++1z"
 
 if test "x$build" = "x$host"; then
   CFLAGS="$CFLAGS -isystem /usr/local/include -isystem /usr/pkg/include"
@@ -74,7 +74,7 @@ case "$CCVERSION" in
   ;;
 esac
 
-EXTRAFLAGS="$EXTRAFLAGS -DLD64_VERSION_NUM=956.6"
+EXTRAFLAGS="$EXTRAFLAGS -DLD64_VERSION_NUM=762"
 
 case "$CXXVERSION" in
   *clang* )
@@ -357,91 +357,15 @@ LDFLAGS=$ORIGLDFLAGS
 CHECK_LLVM
 LDFLAGS="$LDFLAGS $LTO_RPATH"
 
-### Check for Blocks Runtime library ###
-
-AC_ARG_WITH([libblocksruntime],
-    AS_HELP_STRING([--with-libblocksruntime],
-                  [path to the blocks runtime library]),
-    [BLOCKS_RUNTIME_DIR=$with_libblocksruntime], [BLOCKS_RUNTIME_DIR=""])
-
-if test "x$BLOCKS_RUNTIME_DIR" = "xno"; then
-  BLOCKS_RUNTIME_DIR=""
-fi
-
-if test "x$BLOCKS_RUNTIME_DIR" != "x"; then
-  test -d "$BLOCKS_RUNTIME_DIR/lib" && LDFLAGS="$LDFLAGS -L$BLOCKS_RUNTIME_DIR/lib"
-  test -d "$BLOCKS_RUNTIME_DIR/lib64" && LDFLAGS="$LDFLAGS -L$BLOCKS_RUNTIME_DIR/lib64"
-  test -d "$BLOCKS_RUNTIME_DIR/lib32" && LDFLAGS="$LDFLAGS -L$BLOCKS_RUNTIME_DIR/lib32"
-  if test "x$rpathlink" = "xyes"; then
-    BLOCKS_RUNTIME_RPATH="-Wl,-rpath,$BLOCKS_RUNTIME_DIR/lib,--enable-new-dtags"
-    BLOCKS_RUNTIME_RPATH="$BLOCKS_RUNTIME_RPATH -Wl,-rpath,$BLOCKS_RUNTIME_DIR/lib64,--enable-new-dtags"
-    BLOCKS_RUNTIME_RPATH="$BLOCKS_RUNTIME_RPATH -Wl,-rpath,$BLOCKS_RUNTIME_DIR/lib32,--enable-new-dtags"
-    LDFLAGS="$LDFLAGS $BLOCKS_RUNTIME_RPATH"
-  fi
-  if test "x$isdarwin" = "xyes"; then
-    BLOCKS_RUNTIME_RPATH="-Wl,-rpath,$BLOCKS_RUNTIME_DIR/lib"
-    LDFLAGS="$LDFLAGS $BLOCKS_RUNTIME_RPATH"
-  fi
-fi
-
-AC_CHECK_LIB([BlocksRuntime], [_Block_release], [BLOCKS_RUNTIME_LIB=-lBlocksRuntime], [
-    AC_CHECK_LIB([c], [_Block_release], [], [
-      echo "Required library libblocksruntime not installed (install libdispatch!)" >&2
-      exit 1
-    ])
-    AC_SUBST(BLOCKS_RUNTIME_LIB)
-  ])
-AC_SUBST(BLOCKS_RUNTIME_LIB)
-
 ### Check for dispatch library ###
-
-AC_ARG_WITH([libdispatch],
-    AS_HELP_STRING([--with-libdispatch],
-                  [path to the dispatch library]),
-    [LIBDISPATCH_DIR=$with_libdispatch], [LIBDISPATCH_DIR=""])
-
-if test "x$LIBDISPATCH_DIR" = "xno"; then
-  LIBDISPATCH_DIR=""
-fi
-
-if test "x$LIBDISPATCH_DIR" != "x"; then
-  CXXFLAGS="$CXXFLAGS -isystem $LIBDISPATCH_DIR/include"
-  CPPFLAGS="$CPPFLAGS -isystem $LIBDISPATCH_DIR/include"
-  test -d "$LIBDISPATCH_DIR/lib" && LDFLAGS="$LDFLAGS -L$LIBDISPATCH_DIR/lib"
-  test -d "$LIBDISPATCH_DIR/lib64" && LDFLAGS="$LDFLAGS -L$LIBDISPATCH_DIR/lib64"
-  test -d "$LIBDISPATCH_DIR/lib32" && LDFLAGS="$LDFLAGS -L$LIBDISPATCH_DIR/lib32"
-  if test "x$rpathlink" = "xyes"; then
-    LIBDISPATCH_RPATH="-Wl,-rpath,$LIBDISPATCH_DIR/lib,--enable-new-dtags"
-    LIBDISPATCH_RPATH="$LIBDISPATCH_RPATH -Wl,-rpath,$LIBDISPATCH_DIR/lib64,--enable-new-dtags"
-    LIBDISPATCH_RPATH="$LIBDISPATCH_RPATH -Wl,-rpath,$LIBDISPATCH_DIR/lib32,--enable-new-dtags"
-    LDFLAGS="$LDFLAGS $LIBDISPATCH_RPATH"
-  fi
-  if test "x$isdarwin" = "xyes"; then
-    LIBDISPATCH_RPATH="-Wl,-rpath,$LIBDISPATCH_DIR/lib"
-    LDFLAGS="$LDFLAGS $LIBDISPATCH_RPATH"
-  fi
-fi
-
-# FreeBSD requires -lBlocksRuntime for -ldispatch
-if test "x$isdarwin" != "xyes"; then
-  ORIGLDFLAGS=$LDFLAGS
-  LDFLAGS="$LDFLAGS -lBlocksRuntime"
-fi
 
 AC_CHECK_LIB([dispatch], [dispatch_once], [
   AC_CHECK_HEADERS([dispatch/dispatch.h], [DISPATCH_LIB=-ldispatch])], [
-    AC_CHECK_LIB([c], [dispatch_once], [
-      AC_CHECK_HEADERS([dispatch/dispatch.h], [])], [
-        echo "Required library libdispatch not installed" >&2
-        exit 1
-      ])
+    AC_CHECK_LIB([c], [dispatch_sync], [
+      AC_CHECK_HEADERS([dispatch/dispatch.h], [DISPATCH_LIB=])], [])
     AC_SUBST(DISPATCH_LIB)
   ])
 AC_SUBST(DISPATCH_LIB)
-
-if test "x$isdarwin" != "xyes"; then
-  LDFLAGS=$ORIGLDFLAGS
-fi
 
 ### Check for libfts (musl) ###
 
@@ -575,7 +499,7 @@ AC_CONFIG_FILES([ld64/Makefile])
 AC_CONFIG_FILES([ld64/doc/man/Makefile])
 AC_CONFIG_FILES([ld64/src/Makefile])
 AC_CONFIG_FILES([ld64/src/3rd/Makefile])
-AC_CONFIG_FILES([ld64/src/mach_o/Makefile])
+AC_CONFIG_FILES([ld64/src/3rd/BlocksRuntime/Makefile])
 AC_CONFIG_FILES([ld64/src/ld/Makefile])
 AC_CONFIG_FILES([ld64/src/ld/parsers/Makefile])
 AC_CONFIG_FILES([ld64/src/ld/passes/Makefile])

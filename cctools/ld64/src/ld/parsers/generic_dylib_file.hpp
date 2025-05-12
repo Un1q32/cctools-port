@@ -28,7 +28,9 @@
 #include "ld.hpp"
 #include "Bitcode.hpp"
 #include "Options.h"
-#include "Containers.h"
+#include <unordered_map>
+#include <unordered_set>
+#include <memory> // ld64-port: std::unique_ptr
 
 namespace generic {
 namespace dylib {
@@ -80,8 +82,8 @@ public:
 	virtual const char*				name() const override final { return "import-atom"; }
 	virtual uint64_t				size() const override final { return 0; }
 	virtual uint64_t				objectAddress() const override final { return 0; }
-	virtual ld::Fixup::iterator		fixupsBegin() const	override final { return _undefs.data(); }
-	virtual ld::Fixup::iterator		fixupsEnd()	const override final { return _undefs.data() + _undefs.size(); }
+	virtual ld::Fixup::iterator		fixupsBegin() const	override final { return &_undefs[0]; }
+	virtual ld::Fixup::iterator		fixupsEnd()	const override final { return &_undefs[_undefs.size()]; }
 	virtual void					copyRawContent(uint8_t buffer[]) const override final { }
 
 	virtual void					setScope(Scope)		{ }
@@ -114,7 +116,6 @@ public:
 
 	// overrides of ld::dylib::File
 	virtual void							processIndirectLibraries(ld::dylib::File::DylibHandler*, bool addImplicitDylibs) override;
-	virtual bool							indirectLibrariesProcessed() const final { return _indirectDylibsProcessed; }
 	virtual bool							providedExportAtom() const	override final { return _providedAtom; }
     virtual bool                            hasReExportedDependentsThatProvidedExportAtom() const override;
 	virtual const char*						parentUmbrella() const override final { return _parentUmbrella; }
@@ -139,6 +140,15 @@ private:
 	friend class ExportAtom;
 	friend class ImportAtom;
 
+	struct CStringHash {
+		std::size_t operator()(const char* __s) const {
+			unsigned long __h = 0;
+			for ( ; *__s; ++__s)
+				__h = 5 * __h + *__s;
+			return size_t(__h);
+		};
+	};
+
 protected:
     struct AtomAndWeak { ld::Atom* atom; bool weakDef; bool tlv; uint64_t address; const char * installname; uint32_t compat_version; };
 	struct Dependent {
@@ -152,8 +162,8 @@ protected:
 	struct ReExportChain { ReExportChain* prev; const File* file; };
 
 private:
-	using NameToAtomMap = ld::CStringMap<AtomAndWeak>;
-	using NameSet = ld::CStringSet;
+	using NameToAtomMap = std::unordered_map<const char*, AtomAndWeak, ld::CStringHash, ld::CStringEquals>;
+	using NameSet = std::unordered_set<const char*, CStringHash, ld::CStringEquals>;
 
 	std::pair<bool, bool>		hasWeakDefinitionImpl(const char* name) const;
     bool                        hasDefinitionImpl(const char* name) const;
