@@ -35,7 +35,6 @@
 
 #include <algorithm>
 #include <vector>
-#include <unordered_set>
 
 #include <libunwind.h>
 #include <mach-o/compact_unwind_encoding.h>
@@ -45,7 +44,6 @@
 #include "Registers.hpp"
 #include "DwarfParser.hpp"
 #include "InternalMacros.h"
-#include "Containers.h"
 //#include "CompactUnwinder.hpp"
 
 #define EXTRACT_BITS(value, mask) \
@@ -98,8 +96,8 @@ public:
 	typedef typename A::sint_t		sint_t;	
 
 	static const char* parseCFIs(A& addressSpace, pint_t ehSectionStart, uint32_t sectionLength, 
-                            const ld::Set<pint_t>& cuStarts,
-                            bool keepDwarfWhichHasCU, bool forceDwarfConversion, bool neverConvertToCU, bool canEncodeToDwarf,
+                            const pint_t cuStarts[], uint32_t cuCount, 
+                            bool keepDwarfWhichHasCU, bool forceDwarfConversion, bool neverConvertToCU,
                             CFI_Atom_Info<A>* infos, uint32_t& infosCount, void* ref, WarnFunc warn);
 
 
@@ -184,11 +182,10 @@ private:
 
 template <typename A, typename R>
 const char* DwarfInstructions<A,R>::parseCFIs(A& addressSpace, pint_t ehSectionStart, uint32_t sectionLength, 
-                                      const ld::Set<pint_t>& cuStarts,
-                                      bool keepDwarfWhichHasCU,  bool forceDwarfConversion, bool neverConvertToCU, bool canEncodeToDwarf,
+                                      const pint_t cuStarts[], uint32_t cuCount,  
+                                      bool keepDwarfWhichHasCU,  bool forceDwarfConversion, bool neverConvertToCU,
                                       CFI_Atom_Info<A>* infos, uint32_t& infosCount, void* ref, WarnFunc warn)
 {
-	const bool encodeToDwarf = neverConvertToCU || (canEncodeToDwarf && !forceDwarfConversion);
 	typename CFI_Parser<A>::CIE_Info cieInfo;
 	CFI_Atom_Info<A>* entry = infos;
 	CFI_Atom_Info<A>* end = &infos[infosCount];
@@ -273,7 +270,13 @@ const char* DwarfInstructions<A,R>::parseCFIs(A& addressSpace, pint_t ehSectionS
 				p = endOfAug;
 			}
 			// See if already is a compact unwind for this address.  
-			bool alreadyHaveCU = cuStarts.find(entry->u.fdeInfo.function.targetAddress) != cuStarts.end();
+			bool alreadyHaveCU = false;
+			for (uint32_t i=0; i < cuCount; ++i) {
+				if (cuStarts[i] == entry->u.fdeInfo.function.targetAddress) {
+				  alreadyHaveCU = true;
+				  break;
+				}
+			}
             if ( pcRange == 0 ) {
                 warn(ref, pcStart, "FDE found for zero size function");
                 break;
@@ -284,7 +287,9 @@ const char* DwarfInstructions<A,R>::parseCFIs(A& addressSpace, pint_t ehSectionS
 					++entry;
 			}
 			else {
-				if ( encodeToDwarf ) {
+				if ( neverConvertToCU || ((cuCount != 0) && !forceDwarfConversion) ) {
+					// Have some compact unwind, so this is a new .o file, therefore anything without
+					// compact unwind must be something not expressable in compact unwind.
 					R dummy;
 					entry->u.fdeInfo.compactUnwindInfo = encodeToUseDwarf(dummy);
 				}

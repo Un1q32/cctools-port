@@ -23,7 +23,6 @@
  */
  
 // start temp HACK for cross builds
-#include "Containers.h"
 //extern "C" double log2 ( double ); // ld64-port: commented
 //#define __MATH__
 // end temp HACK for cross builds
@@ -48,7 +47,6 @@
 #include <mach-o/dyld.h>
 #include <dlfcn.h>
 #include <AvailabilityMacros.h>
-#include <os/lock_private.h>
 
 #include <iostream>
 #include <string>
@@ -88,7 +86,6 @@
 #include "passes/dylibs.h"
 #include "passes/bitcode_bundle.h"
 #include "passes/code_dedup.h"
-#include "passes/objc_stubs.h"
 
 #include "parsers/archive_file.h"
 #include "parsers/macho_relocatable_file.h"
@@ -124,6 +121,7 @@ public:
 	void									setSectionSizesAndAlignments();
 	void									sortSections();
 	void									markAtomsOrdered() { _atomsOrderedInSections = true; }
+	bool									hasReferenceToWeakExternal(const ld::Atom& atom);
 
 	virtual									~InternalState() {}
 private:
@@ -190,8 +188,8 @@ std::vector<const char*> InternalState::FinalSection::_s_segmentsSeen;
 
 size_t InternalState::SectionHash::operator()(const ld::Section* sect) const
 {
-	size_t hash = 0;
-	ld::container_details::CStringHash temp;
+	size_t hash = 0;	
+	ld::CStringHash temp;
 	hash += temp.operator()(sect->segmentName());
 	hash += temp.operator()(sect->sectionName());
 	return hash;
@@ -208,8 +206,8 @@ InternalState::FinalSection::FinalSection(const ld::Section& sect, uint32_t sect
 	  _segmentOrder(segmentOrder(sect, opts)),
 	  _sectionOrder(sectionOrder(sect, sectionsSeen, opts))
 {
-	//fprintf(stderr, "FinalSection(%16s, %16s) _segmentOrder=%3d, type=%d, _sectionOrder=0x%08X\n",
-	//		this->segmentName(), this->sectionName(), this->type(), _segmentOrder, _sectionOrder);
+	//fprintf(stderr, "FinalSection(%16s, %16s) _segmentOrder=%3d, _sectionOrder=0x%08X\n",
+	//		this->segmentName(), this->sectionName(), _segmentOrder, _sectionOrder);
 }
 
 const ld::Section& InternalState::FinalSection::outputSection(const ld::Section& sect, bool mergeZeroFill)
@@ -327,6 +325,8 @@ uint32_t InternalState::FinalSection::segmentOrder(const ld::Section& sect, cons
 			return ((options.outputKind() == Options::kKextBundle) ? 8 : (armCloseStubs ? 5 : 3));
 		if ( strcmp(sect.segmentName(), "__AUTH_CONST") == 0 )
 			return (options.outputKind() == Options::kKextBundle) ? 6 : 4;
+		if ( strcmp(sect.segmentName(), "__OBJC_CONST") == 0 )
+			return 5;
 		if ( strcmp(sect.segmentName(), "__AUTH") == 0 )
 			return (options.outputKind() == Options::kKextBundle) ? 7 : 6;
 		// in -r mode, want __DATA  last so zerofill sections are at end
@@ -352,12 +352,10 @@ uint32_t InternalState::FinalSection::sectionOrder(const ld::Section& sect, uint
 		return 0;
 	if ( sect.type() == ld::Section::typeMachHeader )
 		return 1;
-	if ( sect.type() == ld::Section::typeLastContentSection )
-		return INT_MAX - 1;
 	if ( sect.type() == ld::Section::typeLastSection )
 		return INT_MAX;
 	const std::vector<const char*>* sectionList = options.sectionOrder(sect.segmentName());
-	if ( ((options.outputKind() == Options::kPreload) || (options.platforms().contains(ld::Platform::freestanding)) || (options.platforms().contains(ld::Platform::sepOS)) || (options.outputKind() == Options::kDyld) || options.isKernel()) && (sectionList != NULL) ) {
+	if ( ((options.outputKind() == Options::kPreload) || (options.outputKind() == Options::kDyld) || options.isKernel()) && (sectionList != NULL) ) {
 		uint32_t count = 10;
 		for (std::vector<const char*>::const_iterator it=sectionList->begin(); it != sectionList->end(); ++it, ++count) {
 			if ( strcmp(*it, sect.sectionName()) == 0 ) 
@@ -376,38 +374,33 @@ uint32_t InternalState::FinalSection::sectionOrder(const ld::Section& sect, uint
 				return 12;
 			case ld::Section::typeStubHelper:
 				return 13;
-			case ld::Section::typeStubObjC:
-				if ( options.sharedRegionEligible() )
-					return INT_MAX;
-				else
-					return 14;
 			case ld::Section::typeInitOffsets:
-				return 15;
+				return 14;
 			case ld::Section::typeThreadStarts:
-				return INT_MAX-9;
-			case ld::Section::typeLSDA:
 				return INT_MAX-8;
-			case ld::Section::typeUnwindInfo:
+			case ld::Section::typeLSDA:
 				return INT_MAX-7;
-			case ld::Section::typeCFI:
+			case ld::Section::typeUnwindInfo:
 				return INT_MAX-6;
+			case ld::Section::typeCFI:
+				return INT_MAX-5;
 			case ld::Section::typeStubClose:
-				return INT_MAX - 4;
+				return INT_MAX - 3;
 			case ld::Section::typeNonStdCString:
 				if ( (strcmp(sect.sectionName(), "__oslogstring") == 0) && options.makeEncryptable() )
-					return INT_MAX-5;
+					return INT_MAX-4;
 				if ( options.sharedRegionEligible() ) {
 					if ( (strcmp(sect.sectionName(), "__objc_classname") == 0) )
-						return INT_MAX - 3;
-					if ( (strcmp(sect.sectionName(), "__objc_methname") == 0) )
 						return INT_MAX - 2;
-					if ( (strcmp(sect.sectionName(), "__objc_methtype") == 0) )
+					if ( (strcmp(sect.sectionName(), "__objc_methname") == 0) )
 						return INT_MAX - 1;
+					if ( (strcmp(sect.sectionName(), "__objc_methtype") == 0) )
+						return INT_MAX;
 				}
 				return sectionsSeen+20;
 			default:
 				if ( (strcmp(sect.sectionName(), "__objc_methlist") == 0) )
-					return 16;
+					return 15;
 				return sectionsSeen+20;
 		}
 	}
@@ -485,6 +478,14 @@ uint32_t InternalState::FinalSection::sectionOrder(const ld::Section& sect, uint
 				else
 					return sectionsSeen+40;
 		}
+	}
+	else if ( strcmp(sect.segmentName(), "__OBJC_CONST") == 0 ) {
+		// First emit the sections we want the shared cache builder to keep in order
+		if ( strcmp(sect.sectionName(), "__objc_class_ro") == 0 )
+			return 10;
+		if ( strcmp(sect.sectionName(), "__cfstring") == 0 )
+			return 11;
+		return sectionsSeen+10;
 	}
 	// make sure zerofill in any other section is at end of segment
 	if ( sect.type() == ld::Section::typeZeroFill )
@@ -579,6 +580,34 @@ static void validateFixups(const ld::Atom& atom)
 }
 #endif
 
+bool InternalState::hasReferenceToWeakExternal(const ld::Atom& atom)
+{
+	// if __DATA,__const atom has pointer to weak external symbol, don't move to __DATA_CONST
+	const ld::Atom* target = NULL;
+	for (ld::Fixup::iterator fit=atom.fixupsBegin(); fit != atom.fixupsEnd(); ++fit) {
+		if ( fit->firstInCluster() ) {
+			target = NULL;
+		}
+		switch ( fit->binding ) {
+			case ld::Fixup::bindingNone:
+			case ld::Fixup::bindingByNameUnbound:
+				break;
+			case ld::Fixup::bindingByContentBound:
+			case ld::Fixup::bindingDirectlyBound:
+				target = fit->u.target;
+				break;
+			case ld::Fixup::bindingsIndirectlyBound:
+				target = indirectBindingTable[fit->u.bindingIndex];
+				break;
+		}
+		if ( (target != NULL) && (target->definition() == ld::Atom::definitionRegular)
+			&& (target->combine() == ld::Atom::combineByName) && (target->scope() == ld::Atom::scopeGlobal) ) {
+			return true;
+		}
+	}
+	return false;
+}
+
 
 // .o files without .subsections_via_symbols have all atoms in a section chained together with kindNoneFollowOn
 // If any symbol in section is moved to another segment/section, all the atoms in that section need to be moved too.
@@ -596,11 +625,7 @@ bool InternalState::inMoveRWChain(const ld::Atom& atom, const char* filePath, bo
 		dstSeg = pos->second;
 		return true;
 	}
-
-	// rdar://93876735 (if atom is code, then it won't be in a rw chain)
-	if ( atom.section().type() == ld::Section::typeCode )
-		return false;
-
+	
 	bool result = false;
 	if ( _options.moveRwSymbol(atom.getUserVisibleName(), filePath, dstSeg, wildCardMatch) )
 		result = true;
@@ -739,7 +764,7 @@ ld::Internal::FinalSection* InternalState::addAtom(const ld::Atom& atom)
 	const char* curSectName = atom.section().sectionName();
 	const char* curSegName = atom.section().segmentName();
 	ld::Section::Type sectType = atom.section().type();
-	const ld::File* f = atom.originalFile();
+	const ld::File* f = atom.file();
 	const char* path = (f != NULL) ? f->path() : NULL;
 	if ( atom.section().type() == ld::Section::typeTentativeDefs ) {
 		// tentative definitions don't have a real section name yet
@@ -751,8 +776,7 @@ ld::Internal::FinalSection* InternalState::addAtom(const ld::Atom& atom)
 	}
 
 	// Support for -move_to_r._segment
-	// rdar://87716075 normally only visibile symbols can be moved, but some firmware projects want to move temp symbols
-	if ( (atom.symbolTableInclusion() == ld::Atom::symbolTableIn) || ((atom.symbolTableInclusion() == ld::Atom::symbolTableNotInFinalLinkedImages) && (_options.outputKind() == Options::kPreload)) ) {
+	if ( atom.symbolTableInclusion() == ld::Atom::symbolTableIn ) {
 		const char* dstSeg;
 		bool wildCardMatch;
 		if ( inMoveRWChain(atom, path, false, dstSeg, wildCardMatch) ) {
@@ -789,6 +813,21 @@ ld::Internal::FinalSection* InternalState::addAtom(const ld::Atom& atom)
 						printf("symbol '%s', .axsymbol mapped it to %s/%s\n", atom.name(), curSegName, curSectName);
 				}
 			}
+#if SUPPORT_ARCH_arm64e
+			else if ( (strncmp(symName, "__OBJC_CLASS_RO_", 16) == 0) || (strncmp(symName, "__OBJC_METACLASS_RO_", 20) == 0) ) {
+				// The shared cache knows how to strip authenticated pointers from these atoms.
+				// Move them to __OBJC_CONST to make it easier to optimize them.
+				// Note the magic 72 here is the size of an objc class_ro_t.
+				// Swift has a larger class_ro_t which we don't know if we can optimize
+				if ( (atom.size() == 72) && _options.supportsAuthenticatedPointers() && _options.sharedRegionEligible() ) {
+					curSegName = "__OBJC_CONST";
+					curSectName  = "__objc_class_ro";
+					fs = this->getFinalSection(curSegName, curSectName, sectType);
+					if ( _options.traceSymbolLayout() )
+						printf("symbol '%s', class_ro_t mapped it to %s/%s\n", atom.name(), curSegName, curSectName);
+				}
+			}
+#endif
 		}
 		if ( (fs == NULL) && inMoveROChain(atom, path, dstSeg, wildCardMatch) ) {
 			if ( (sectType != ld::Section::typeCode)
@@ -827,23 +866,58 @@ ld::Internal::FinalSection* InternalState::addAtom(const ld::Atom& atom)
 	// support for -rename_section and -rename_segment
 	for (const Options::SectionRename& rename : _options.sectionRenames()) {
 		if ( (strcmp(curSectName, rename.fromSection) == 0) && (strcmp(curSegName, rename.fromSegment) == 0) ) {
-			curSegName = rename.toSegment;
-			curSectName = rename.toSection;
+			if ( _options.useDataConstSegment() && _options.sharedRegionEligible() && (strcmp(curSectName, "__const") == 0) && (strcmp(curSegName, "__DATA") == 0) && hasReferenceToWeakExternal(atom) ) {
+				// if __DATA,__const atom has pointer to weak external symbol, don't move to __DATA_CONST
+				curSectName = "__const_weak";
 
 #if SUPPORT_ARCH_arm64e
-			// Actually move to __AUTH_CONST if we are const and authenticated
-			if ( !strcmp(curSegName, "__DATA_CONST") ) {
-				// We may want __AUTH_CONST, but double check there isn't a chain already
+				// We may want __AUTH, but double check there isn't a chain already
 				// for this atom which will force it in a different segment
-				curSegName = "__AUTH_CONST";
+				curSegName = "__AUTH";
 				if ( !inMoveAuthChain(atom, false, curSegName) )
-					curSegName = "__DATA_CONST";
-			}
+					curSegName = "__DATA";
 #endif
 
-			fs = this->getFinalSection(curSegName, rename.toSection, sectType);
-			if ( _options.traceSymbolLayout() )
-				printf("symbol '%s', -rename_section mapped it to %s/%s\n", atom.name(), fs->segmentName(), fs->sectionName());
+				fs = this->getFinalSection(curSegName, curSectName, sectType);
+				if ( _options.traceSymbolLayout() )
+					printf("symbol '%s', contains pointers to weak symbols, so mapped it to %s/__const_weak\n", atom.name(), curSegName);
+			}
+			else if ( _options.useDataConstSegment() && _options.sharedRegionEligible() && (sectType == ld::Section::typeNonLazyPointer) && hasReferenceToWeakExternal(atom) ) {
+				// if __DATA,__nl_symbol_ptr atom has pointer to weak external symbol, don't move to __DATA_CONST
+				curSectName = "__got_weak";
+
+				curSegName = "__DATA";
+#if SUPPORT_ARCH_arm64e
+				// We may want __AUTH, but double check there isn't a chain already
+				// for this atom which will force it in a different segment
+				curSegName = "__AUTH";
+				if ( !inMoveAuthChain(atom, false, curSegName) )
+					curSegName = "__DATA";
+#endif
+
+				fs = this->getFinalSection(curSegName, curSectName, sectType);
+				if ( _options.traceSymbolLayout() )
+					printf("symbol '%s', contains pointers to weak symbols, so mapped it to %s/__got_weak\n", atom.name(), curSegName);
+			}
+			else {
+				curSegName = rename.toSegment;
+				curSectName = rename.toSection;
+
+#if SUPPORT_ARCH_arm64e
+				// Actually move to __AUTH_CONST if we are const and authenticated
+				if ( !strcmp(curSegName, "__DATA_CONST") ) {
+					// We may want __AUTH_CONST, but double check there isn't a chain already
+					// for this atom which will force it in a different segment
+					curSegName = "__AUTH_CONST";
+					if ( !inMoveAuthChain(atom, false, curSegName) )
+						curSegName = "__DATA_CONST";
+				}
+#endif
+
+				fs = this->getFinalSection(curSegName, rename.toSection, sectType);
+				if ( _options.traceSymbolLayout() )
+					printf("symbol '%s', -rename_section mapped it to %s/%s\n", atom.name(), fs->segmentName(), fs->sectionName());
+			}
 		}
 	}
 	for (const Options::SegmentRename& rename : _options.segmentRenames()) {
@@ -887,14 +961,7 @@ ld::Internal::FinalSection* InternalState::addAtom(const ld::Atom& atom)
 			// last atom in section$end$ atom, insert before it
 			const ld::Atom* endAtom = fs->atoms.back();
 			fs->atoms.pop_back();
-
-			// there can be two sectionEnd atoms one for the content and one for page aligned segment end
-			const ld::Atom* contentEndAtom = (fs->atoms.size() >= 1 && fs->atoms.back()->contentType() == ld::Atom::typeSectionEnd) ? fs->atoms.back() : nullptr;
-			if ( contentEndAtom )
-				fs->atoms.pop_back();
 			fs->atoms.push_back(&atom);
-			if ( contentEndAtom )
-				fs->atoms.push_back(contentEndAtom);
 			fs->atoms.push_back(endAtom);
 		}
 		else {
@@ -906,6 +973,7 @@ ld::Internal::FinalSection* InternalState::addAtom(const ld::Atom& atom)
 		// normal case
 		fs->atoms.push_back(&atom);
 	}
+	this->atomToSection[&atom] = fs;
 	return fs;
 }
 
@@ -1019,8 +1087,6 @@ bool InternalState::hasZeroForFileOffset(const ld::Section* sect)
 		case ld::Section::typePageZero:
 		case ld::Section::typeStack:
 		case ld::Section::typeTentativeDefs:
-		case ld::Section::typeLastSection:
-		case ld::Section::typeLastContentSection:
 			return true;
 		default:
 			break;
@@ -1101,20 +1167,10 @@ void InternalState::setSectionSizesAndAlignments()
 						offset = (offset + 4095) & (-4096); // round up to end of page
 					}
 				}
-				auto isHiddenAutoHide = [&]() {
-					// <rdar://problem/6783167> support auto hidden weak symbols: .weak_def_can_be_hidden
-					if ( atom->autoHide() && (_options.outputKind() != Options::kObjectFile) ) {
-						// adding auto-hide symbol to .exp file should keep it global
-						if ( !_options.hasExportMaskList() || !_options.shouldExport(atom->name()) )
-							return true;
-					}
-					return false;
-				};
-				if ( (atom->scope() == ld::Atom::scopeGlobal)
+				if ( (atom->scope() == ld::Atom::scopeGlobal) 
 					&& (atom->definition() == ld::Atom::definitionRegular) 
-					&& (atom->combine() == ld::Atom::combineByName)
-					&& !isHiddenAutoHide()
-					&& ((atom->symbolTableInclusion() == ld::Atom::symbolTableIn)
+					&& (atom->combine() == ld::Atom::combineByName) 
+					&& ((atom->symbolTableInclusion() == ld::Atom::symbolTableIn) 
 					 || (atom->symbolTableInclusion() == ld::Atom::symbolTableInAndNeverStrip)) ) {
 						this->hasWeakExternalSymbols = true;
 						if ( _options.warnWeakExports()	) 
@@ -1352,31 +1408,9 @@ uint64_t InternalState::assignFileOffsets()
 	uint64_t fileOffset = 0;
 	lastSegName = "";
 	if ( log ) fprintf(stderr, "All segments with file offsets:\n");
-
 	for (std::vector<ld::Internal::FinalSection*>::iterator it = sections.begin(); it != sections.end(); ++it) {
 		ld::Internal::FinalSection* sect = *it;
-		bool zeroFileOffset = hasZeroForFileOffset(sect);
-
-		// if this is the segment$start section and the only other sections in this
-		// segment are segment$end and/or real zerofill sections then treat it as zerofill too
-		if ( sect->type() == ld::Section::typeFirstSection ) {
-			bool allOtherSectionsInSegmentAreZero = true;
-			bool hasNonHiddenSection = false;
-
-			for ( auto followSectIt = std::next(it); followSectIt != sections.end(); ++followSectIt ) {
-				ld::Internal::FinalSection* followSect = *followSectIt;
-				if ( strcmp(sect->segmentName(), followSect->segmentName()) != 0 ) {
-					break;
-				}
-
-				allOtherSectionsInSegmentAreZero &= hasZeroForFileOffset(followSect);
-				hasNonHiddenSection |= !followSect->isSectionHidden();
-			}
-
-			zeroFileOffset |= allOtherSectionsInSegmentAreZero && hasNonHiddenSection;
-		}
-
-		if ( zeroFileOffset ) {
+		if ( hasZeroForFileOffset(sect) ) {
 			// fileoff of zerofill sections is moot, but historically it is set to zero
 			sect->fileOffset = 0;
 
@@ -1403,16 +1437,6 @@ uint64_t InternalState::assignFileOffsets()
 		if ( log ) fprintf(stderr, "  fileoffset=0x%08llX, address=0x%08llX, hidden=%d, size=%lld, alignment=%02d, section=%s,%s\n",
 				sect->fileOffset, sect->address, sect->isSectionHidden(), sect->size, sect->alignment, 
 				sect->segmentName(), sect->sectionName());
-	}
-
-	// round up segment$end addresses to the real segment end (page aligned address)
-	for (std::vector<ld::Internal::FinalSection*>::iterator it = sections.begin(); it != sections.end(); ++it) {
-		ld::Internal::FinalSection* sect = *it;
-		if ( sect->type() == ld::Section::typeLastSection ) {
-			uint64_t addr = sect->address;
-			addr = (sect->address + _options.segmentAlignment() - 1) & -((uint64_t)_options.segmentAlignment());
-			sect->address = addr;
-		}
 	}
 
 #if 0
@@ -1484,100 +1508,19 @@ static void getVMInfo(vm_statistics_data_t& info)
 	}
 }
 
-//ld64-port
-#include <sys/wait.h>
 
-/**
- * Executes the ld64.lld linker with the provided arguments.
- * This function never returns; it either successfully replaces the current process
- * with ld64.lld, or it prints an error and exits the program.
- */
-void execute_ld64_lld(int argc, const char *argv[]) {
-  char *new_argv[argc + 1];
-  new_argv[0] = (char*)"ld64.lld";
-  memcpy(&new_argv[1], argv + 1, (argc - 1) * sizeof(char *));
-  new_argv[argc] = NULL;
-
-  execvp("ld64.lld", new_argv);
-  perror("execvp failed");
-  exit(1);
-}
-
-/**
- * Determines whether to use the `ld64.lld` linker based on environment variables and arguments.
- * 
- * If the environment variables `OSXCROSS_USE_LLD` or `CCTOOLS_PORT_USE_LLD` are set, the function
- * attempts to use `ld64.lld`. If the environment variables `OSXCROSS_LLD_LD64_FALLBACK` or 
- * `CCTOOLS_PORT_LLD_LD64_FALLBACK` are also set, the function forks a new process to execute `ld64.lld`. 
- * If `ld64.lld` fails (exits with a non-zero status), the function prints an error message indicating 
- * the fallback to `ld64`. If the fallback environment variables are not set, it directly executes `ld64.lld` 
- * without forking.
- * 
- * The check for the `-v` argument ensures that when `-v` is the only argument, the program avoids executing
- * `ld64.lld` or its fallback. This is important for scenarios such as GCC compilation, where the output
- * of `-v` might be parsed by the build system.
- */
-void checkWhetherToUseLLD(int argc, const char *argv[]) {
-  int only_v = (argc == 2 && strcmp(argv[1], "-v") == 0);
-  int use_lld = (getenv("OSXCROSS_USE_LLD") || getenv("CCTOOLS_PORT_USE_LLD")) && !only_v;
-
-  if (use_lld) {
-    int fallback_enabled = getenv("OSXCROSS_LLD_LD64_FALLBACK") || getenv("CCTOOLS_PORT_LLD_LD64_FALLBACK");
-
-    if (!fallback_enabled) {
-      execute_ld64_lld(argc, argv);
-    } else {
-      pid_t pid = fork();
-      if (pid == -1) {
-        perror("fork failed");
-        exit(1);
-      }
-
-      if (pid == 0) {
-        // Child process: Execute ld64.lld
-        execute_ld64_lld(argc, argv);
-      } else {
-        // Parent process
-        int status;
-        if (waitpid(pid, &status, 0) == -1) {
-          perror("waitpid failed");
-          exit(1);
-        }
-
-        if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-          exit(0);
-        } else if (WIFSIGNALED(status)) {
-          exit(1);
-        }
-
-        fprintf(stderr, "ld64.lld exited with status %d. Using ld64 as fallback...\n", WEXITSTATUS(status));
-      }
-    }
-  }
-}
-//ld64-port end
 
 
 int main(int argc, const char* argv[])
 {
-	checkWhetherToUseLLD(argc, argv); // ld64-port
-
 	const char* archName = NULL;
 	bool showArch = false;
 	try {
-		// All objects here are allocated on the heap and leaked, due to the following:
-		// <rdar://problem/55031993> don't run terminators until all we can guarantee all threads are stopped
-		// <rdar://problem/56200095> don't run C++ destructors of stack objects to gain 5% linking perf win
-
-		PerformanceStatistics& statistics = *(new PerformanceStatistics());
+		PerformanceStatistics statistics;
 		statistics.startTool = mach_absolute_time();
 		
 		// create object to track command line arguments
-		Options& options = *(new Options(argc, argv));
-		InternalState& state = *(new InternalState(options));
-		
-		// allow libLTO to be overridden by command line -lto_library
-		if (const char *dylib = options.overridePathlibLTO())
+		Options options(argc, argv);
 		if (options.dumpNormalizedLibArgs()) {
 			for (auto info : options.getInputFiles()) {
 				for (auto arg : info.lib_cli_argument()) {
@@ -1586,6 +1529,7 @@ int main(int argc, const char* argv[])
 			}
 			exit(0);
 		}
+		InternalState state(options);
 
 #ifdef LTO_SUPPORT
 		// allow libLTO to be overridden by command line -lto_library
@@ -1603,11 +1547,11 @@ int main(int argc, const char* argv[])
 		
 		// open and parse input files
 		statistics.startInputFileProcessing = mach_absolute_time();
-		ld::tool::InputFiles& inputFiles = *(new ld::tool::InputFiles(options));
+		ld::tool::InputFiles inputFiles(options);
 		
 		// load and resolve all references
 		statistics.startResolver = mach_absolute_time();
-		ld::tool::Resolver& resolver = *(new ld::tool::Resolver(options, inputFiles, state));
+		ld::tool::Resolver resolver(options, inputFiles, state);
 		resolver.resolve();
         
 		// add dylibs used
@@ -1619,7 +1563,6 @@ int main(int argc, const char* argv[])
 
 		// run passes
 		statistics.startPasses = mach_absolute_time();
-		ld::passes::objc_stubs::doPass(options, state);
 		ld::passes::objc::doPass(options, state);
 		ld::passes::stubs::doPass(options, state);
 		ld::passes::inits::doPass(options, state);
@@ -1628,9 +1571,9 @@ int main(int argc, const char* argv[])
 		//ld::passes::objc_constants::doPass(options, state);
 		ld::passes::tlvp::doPass(options, state);
 		ld::passes::dylibs::doPass(options, state);	// must be after stubs and GOT passes
-		ld::passes::dedup::doPass(options, state);
-		ld::passes::order::doPass(options, state); // must run after code dedup, so that deduplicated aliases are sorted
+		ld::passes::order::doPass(options, state);
 		state.markAtomsOrdered();
+		ld::passes::dedup::doPass(options, state);
 		ld::passes::branch_shim::doPass(options, state);	// must be after stubs
 		ld::passes::branch_island::doPass(options, state);	// must be after stubs and order pass
 		ld::passes::dtrace::doPass(options, state);
@@ -1650,10 +1593,10 @@ int main(int argc, const char* argv[])
 
 		// write output file
 		statistics.startOutput = mach_absolute_time();
-		ld::tool::OutputFile& out = *(new ld::tool::OutputFile(options, state));
+		ld::tool::OutputFile out(options, state);
 		out.write(state);
 		statistics.startDone = mach_absolute_time();
-
+		
 		// print statistics
 		//mach_o::relocatable::printCounts();
 		if ( options.printStatistics() ) {
@@ -1670,7 +1613,6 @@ int main(int argc, const char* argv[])
 								statistics.vmEnd.pageins-statistics.vmStart.pageins,
 								statistics.vmEnd.pageouts-statistics.vmStart.pageouts, 
 								statistics.vmEnd.faults-statistics.vmStart.faults);
-			fprintf(stderr, "memory active: %lu, wired: %lu\n", statistics.vmEnd.active_count * vm_page_size, statistics.vmEnd.wire_count * vm_page_size);
 			char temp[40];
 			fprintf(stderr, "processed %3u object files,  totaling %15s bytes\n", inputFiles._totalObjectLoaded, commatize(inputFiles._totalObjectSize, temp));
 			fprintf(stderr, "processed %3u archive files, totaling %15s bytes\n", inputFiles._totalArchivesLoaded, commatize(inputFiles._totalArchiveSize, temp));
@@ -1685,7 +1627,9 @@ int main(int argc, const char* argv[])
 		// <rdar://problem/61228255> need to flush stdout since we skipping some clean up in calling _exit()
 		fflush(stdout);
 
-		exit(0);
+		// <rdar://problem/55031993> don't run terminators until all we can guarantee all threads are stopped
+		// <rdar://problem/56200095> don't run C++ destructors of stack objects to gain 5% linking perf win
+		_exit(0);
 	}
 	catch (const char* msg) {
 		if ( strstr(msg, "malformed") != NULL )
@@ -1695,22 +1639,16 @@ int main(int argc, const char* argv[])
 		else
 			fprintf(stderr, "ld: %s\n", msg);
 		// <rdar://50510752> exit but don't run termination routines
-		exit(1);
+		_exit(1);
 	}
 }
 
 
 #ifndef NDEBUG
-
-//  now that the linker is multi-threaded, only allow one assert() to be processed 
-static os_lock_unfair_s  sAssertLock = OS_LOCK_UNFAIR_INIT;
-
 // implement assert() function to print out a backtrace before aborting
 void __assert_rtn(const char* func, const char* file, int line, const char* failedexpr)
 {
 #ifdef HAVE_EXECINFO_H // ld64-port
-	os_lock_lock(&sAssertLock);
-
     Snapshot *snapshot = Snapshot::globalSnapshot;
     
     snapshot->setSnapshotMode(Snapshot::SNAPSHOT_DEBUG);
@@ -1738,19 +1676,8 @@ void __assert_rtn(const char* func, const char* file, int line, const char* fail
     fprintf(stderr, "A linker snapshot was created at:\n\t%s\n", snapshot->rootDir());
 #endif // HAVE_EXECINFO_H
 	fprintf(stderr, "ld: Assertion failed: (%s), function %s, file %s, line %d.\n", failedexpr, func, file, line);
-	exit(1);
+	_exit(1);
 }
 #endif
 
-// Override atexit() so that destructors don't get registered and we can call the
-// regular exit() instead of _exit()
-#ifndef __APPLE__ // ld64-port
-#define CXA_ATEXIT_THROW throw()
-#else
-#define CXA_ATEXIT_THROW throw()
-#endif
-extern "C" int __cxa_atexit(void (*func) (void *), void * arg, void * dso_handle) CXA_ATEXIT_THROW;
-int __cxa_atexit(void (*func) (void *), void * arg, void * dso_handle) CXA_ATEXIT_THROW
-{
-	return 0;
-}
+
