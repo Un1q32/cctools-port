@@ -1,6 +1,6 @@
 # Apple cctools and ld64 port for Linux, *BSD and macOS #
 
-Current Version: cctools: 1030.6.3, ld64: 956.6.  
+Current Version: cctools: 1030.6.3, ld64: 762.
 Originally ported by [cjacker](http://ios-toolchain-based-on-clang-for-linux.googlecode.com).
 
 ## SUPPORTED HOSTS ##
@@ -20,8 +20,6 @@ armv6, armv7, armv7s, arm64, arm64e,
 arm64_32 (untested), i386, x86_64, x86_64h,  
 armv6m, armv7k, armv7m and armv7em
 
-`ld64` appears to support riscv32, although its exact use case is unclear.
-
 ## SUPPORTED TARGET OPERATING SYSTEMS ##
 
 macOS, iOS, tvOS, watchOS, bridgeOS, Mac Catalyst,  
@@ -31,9 +29,7 @@ Not all of the targets have been tested.
 
 ## DEPENDENCIES ##
 
-`Clang 10+`  
-`libstdc++` or `libc++` with C++20 support; depending on what your compiler uses  
-[`libdispatch-dev` and `libblocksruntime`](https://github.com/tpoechtrager/apple-libdispatch) (the runtime should be installed by the dispatch library)
+`Clang 3.4+`
 
 SDKs with .tdb stubs (>= Xcode 7) require the TAPI library to be installed.  
 => https://github.com/tpoechtrager/apple-libtapi
@@ -46,6 +42,7 @@ Optional, but recommended:
 `llvm-devel`               (For Link Time Optimization Support)  
 `uuid-devel`               (For ld64 `-random_uuid` Support)  
 `llvm-devel` + `xar-devel` (For ld64 `-bitcode_bundle` Support)  
+`libdispatch`              (For parallelism in ld64 / libcodedirectory.c)
 
 You can find xar [here](https://github.com/tpoechtrager/xar).  
 Do not install libxar-dev on Ubuntu, it's a different package.

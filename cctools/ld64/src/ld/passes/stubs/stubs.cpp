@@ -30,12 +30,12 @@
 #include <assert.h>
 #include <libkern/OSByteOrder.h>
 
-#include <algorithm>
 #include <vector>
+#include <set>
+#include <map>
 
 #include "Options.h"
 #include "MachOFileAbstraction.hpp"
-#include "Containers.h"
 #include "ld.hpp"
 
 #include "make_stubs.h"
@@ -162,25 +162,6 @@ const ld::Atom* Pass::stubableFixup(const ld::Fixup* fixup, ld::Internal& state)
 					// any pointer to a resolver needs to change to pointer to stub
 					return target;
 				}
-				break;
-		}
-	}
-	else if ( fixup->binding == ld::Fixup::bindingDirectlyBound ) {
-		const ld::Atom* target = fixup->u.target;
-		switch ( fixup->kind ) {
-			case ld::Fixup::kindStoreTargetAddressX86BranchPCRel32:
-			case ld::Fixup::kindStoreTargetAddressARMBranch24:
-			case ld::Fixup::kindStoreTargetAddressThumbBranch22:
-#if SUPPORT_ARCH_arm64
-			case ld::Fixup::kindStoreTargetAddressARM64Branch26:
-#endif
-				if ( target->definition() == ld::Atom::definitionProxy ) {
-					if ( strcmp(target->name(), "_objc_msgSend") == 0 ) {
-						return target;
-					}
-				}
-				break;
-			default:
 				break;
 		}
 	}
@@ -315,7 +296,7 @@ ld::Atom* Pass::makeStub(const ld::Atom& target, bool weakImport)
 			else if ( _options.makeChainedFixups() && !stubToResolver )
 				return new ld::passes::stubs::arm64_32::NonLazyStubAtom(*this, target, weakImport);
 			else
-				return new ld::passes::stubs::arm64_32::StubAtom(*this, target, stubToGlobalWeakDef, stubToResolver, weakImport, usingDataConst);
+				return new ld::passes::stubs::arm64_32::StubAtom(*this, target, stubToGlobalWeakDef, stubToResolver, weakImport);
 			break;
 #endif
 	}
@@ -334,12 +315,6 @@ void Pass::verifyNoResolverFunctions(ld::Internal& state)
 		}
 	}
 }
-
-struct StubTargetInfo {
-	ld::Atom* stub = nullptr;
-	std::vector<ld::Fixup*> references;
-	bool weakImport = false;
-};
 
 void Pass::process(ld::Internal& state)
 {
@@ -371,31 +346,45 @@ void Pass::process(ld::Internal& state)
 	
 	// walk all atoms and fixups looking for stubable references
 	// don't create stubs inline because that could invalidate the sections iterator
-	Map<const ld::Atom*, StubTargetInfo> infoForAtom;
+	std::vector<const ld::Atom*> atomsCallingStubs;
+	std::map<const ld::Atom*,ld::Atom*> stubFor;
+	std::map<const ld::Atom*,bool>		weakImportMap;
+	atomsCallingStubs.reserve(128);
 	uint64_t codeSize = 0;
-	for (const ld::Internal::FinalSection* sect : state.sections) {
-		for (const ld::Atom* atom: sect->atoms) {
+	for (std::vector<ld::Internal::FinalSection*>::iterator sit=state.sections.begin(); sit != state.sections.end(); ++sit) {
+		ld::Internal::FinalSection* sect = *sit;
+		for (std::vector<const ld::Atom*>::iterator ait=sect->atoms.begin();  ait != sect->atoms.end(); ++ait) {
+			const ld::Atom* atom = *ait;
 			codeSize += atom->size();
+			bool atomNeedsStub = false;
 			for (ld::Fixup::iterator fit = atom->fixupsBegin(), end=atom->fixupsEnd(); fit != end; ++fit) {
 				const ld::Atom* stubableTargetOfFixup = stubableFixup(fit, state);
 				if ( stubableTargetOfFixup != NULL ) {
-					const auto& [pos, inserted] = infoForAtom.try_emplace(stubableTargetOfFixup);
-					pos->second.references.push_back(fit);
-
-					if ( inserted ) {
-						// new entry, set weak import
-						pos->second.weakImport = fit->weakImport;
-					} else if ( pos->second.weakImport != fit->weakImport ) {
-						// handle weak import mismatch
-						switch ( _options.weakReferenceMismatchTreatment() ) {
-							case Options::kWeakReferenceMismatchError:
-								throwf("mismatching weak references for symbol: %s", stubableTargetOfFixup->name());
-							case Options::kWeakReferenceMismatchWeak:
-								pos->second.weakImport = true;
-								break;
-							case Options::kWeakReferenceMismatchNonWeak:
-								pos->second.weakImport = false;
-								break;
+					if ( !atomNeedsStub ) {
+						atomsCallingStubs.push_back(atom);
+						atomNeedsStub = true;
+					}
+					stubFor[stubableTargetOfFixup] = NULL;	
+					// record weak_import attribute
+					std::map<const ld::Atom*,bool>::iterator pos = weakImportMap.find(stubableTargetOfFixup);
+					if ( pos == weakImportMap.end() ) {
+						// target not in weakImportMap, so add
+						weakImportMap[stubableTargetOfFixup] = fit->weakImport;
+					}
+					else {
+						// target in weakImportMap, check for weakness mismatch
+						if ( pos->second != fit->weakImport ) {
+							// found mismatch
+							switch ( _options.weakReferenceMismatchTreatment() ) {
+								case Options::kWeakReferenceMismatchError:
+									throwf("mismatching weak references for symbol: %s", stubableTargetOfFixup->name());
+								case Options::kWeakReferenceMismatchWeak:
+									pos->second = true;
+									break;
+								case Options::kWeakReferenceMismatchNonWeak:
+									pos->second = false;
+									break;
+							}
 						}
 					}
 				}
@@ -410,7 +399,7 @@ void Pass::process(ld::Internal& state)
 					else
 						throwf("resolver functions (%s) can only be used when targeting Mac OS X 10.6 or later", atom->name());
 				}
-				infoForAtom.try_emplace(atom);
+				stubFor[atom] = NULL;	
 			}
 		}
 	}
@@ -421,12 +410,12 @@ void Pass::process(ld::Internal& state)
 	if ( needStubForMain ) {
 		// _main not found in any .o files.  Currently have proxy to dylib 
 		// Add to map, so that a stub will be made
-		infoForAtom.try_emplace(state.entryPoint);
+		stubFor[state.entryPoint] = NULL;	
 	}
 	
 	// short circuit if no stubs needed
 	_internal = &state;
-	_stubCount = infoForAtom.size();
+	_stubCount = stubFor.size();
 	if ( _stubCount == 0 )
 		return;
 	
@@ -460,22 +449,27 @@ void Pass::process(ld::Internal& state)
     }
 	
 	// make stub atoms 
-	for (auto& [atom, info] : infoForAtom) {
-		info.stub = makeStub(*atom, info.weakImport);
+	for (std::map<const ld::Atom*,ld::Atom*>::iterator it = stubFor.begin(); it != stubFor.end(); ++it) {
+		it->second = makeStub(*it->first, weakImportMap[it->first]);
 	}
 	
-	// update fixups to use stubs instead
-	for (const auto& [_, info]: infoForAtom ) {
-		assert(info.stub != NULL && "stub not created");
-		for (ld::Fixup* fit: info.references) {
-			fit->binding = ld::Fixup::bindingDirectlyBound;
-			fit->u.target = info.stub;
+	// updated atoms to use stubs
+	for (std::vector<const ld::Atom*>::iterator it=atomsCallingStubs.begin(); it != atomsCallingStubs.end(); ++it) {
+		const ld::Atom* atom = *it;
+		for (ld::Fixup::iterator fit = atom->fixupsBegin(), end=atom->fixupsEnd(); fit != end; ++fit) {
+			const ld::Atom* stubableTargetOfFixup = stubableFixup(fit, state);
+			if ( stubableTargetOfFixup != NULL ) {
+				ld::Atom* stub = stubFor[stubableTargetOfFixup];
+				assert(stub != NULL && "stub not created");
+				fit->binding = ld::Fixup::bindingDirectlyBound;
+				fit->u.target = stub;
+			}
 		}
 	}
 	
 	// switch entry point from proxy to stub
 	if ( needStubForMain ) {
-		const ld::Atom* mainStub = infoForAtom[state.entryPoint].stub;
+		const ld::Atom* mainStub = stubFor[state.entryPoint];	
 		assert(mainStub != NULL);
 		state.entryPoint = mainStub;
 	}
