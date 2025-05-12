@@ -71,11 +71,6 @@ struct arm64_32
 	typedef Pointer32<LittleEndian>	P;
 };
 
-struct riscv32
-{
-	typedef Pointer32<LittleEndian>		P;
-};
-
 #endif // __ARCHITECTURES__
 
 

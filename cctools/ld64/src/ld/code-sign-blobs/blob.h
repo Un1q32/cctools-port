@@ -180,6 +180,7 @@ public:
 			return p;
 		return NULL;
 	}
+	
 	static BlobType *readBlob(int fd)
 	{ return specific(BlobCore::readBlob(fd, _magic, sizeof(BlobType), 0), true); }
 

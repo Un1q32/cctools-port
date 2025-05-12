@@ -56,7 +56,7 @@ public:
 	std::vector<uint8_t>& bytes() { return _data; }
 	unsigned long size() const { return _data.size(); }
 	void reserve(unsigned long l) { _data.reserve(l); }
-	const uint8_t* start() const { return _data.data(); }
+	const uint8_t* start() const { return &_data[0]; }
 
 	void append_uleb128(uint64_t value) {
 		uint8_t byte;
@@ -1227,8 +1227,7 @@ void ChainedInfoAtom<A>::encode() const
 	this->_encodedData.bytes().reserve(1024);
 
 	uint16_t format = DYLD_CHAINED_IMPORT;
-	// the compact format (DYLD_CHAINED_IMPORT) can only support up to 8MB or strings or 240 dylibs (0xF1 or greater is considered negative)
-	if ( _writer._chainedFixupBinds.hasHugeSymbolStrings() || (_writer.maxLibOrdinal() > 240) )
+	if ( _writer._chainedFixupBinds.hasHugeSymbolStrings() )
 		format = DYLD_CHAINED_IMPORT_ADDEND64;
 	else if ( _writer._chainedFixupBinds.hasHugeAddends() )
 		format = DYLD_CHAINED_IMPORT_ADDEND64;
@@ -1362,24 +1361,24 @@ void ChainedInfoAtom<A>::encode() const
 			this->_encodedData.pad_to_size(4);
 			chainHeader = (dyld_chained_fixups_header*)(this->_encodedData.start());
 			chainHeader->imports_offset = this->_encodedData.size();
-			this->_encodedData.append_mem(imports.data(), sizeof(dyld_chained_import)*imports.size());
+			this->_encodedData.append_mem(&imports[0], sizeof(dyld_chained_import)*imports.size());
 			break;
 		case DYLD_CHAINED_IMPORT_ADDEND:
 			this->_encodedData.pad_to_size(4);
 			chainHeader = (dyld_chained_fixups_header*)(this->_encodedData.start());
 			chainHeader->imports_offset = this->_encodedData.size();
-			this->_encodedData.append_mem(importsAddend.data(), sizeof(dyld_chained_import_addend)*importsAddend.size());
+			this->_encodedData.append_mem(&importsAddend[0], sizeof(dyld_chained_import_addend)*importsAddend.size());
 			break;
 		case DYLD_CHAINED_IMPORT_ADDEND64:
 			this->_encodedData.pad_to_size(8);
 			chainHeader = (dyld_chained_fixups_header*)(this->_encodedData.start());
 			chainHeader->imports_offset = this->_encodedData.size();
-			this->_encodedData.append_mem(importsAddend64.data(), sizeof(dyld_chained_import_addend64)*importsAddend64.size());
+			this->_encodedData.append_mem(&importsAddend64[0], sizeof(dyld_chained_import_addend64)*importsAddend64.size());
 			break;
 	}
 	chainHeader = (dyld_chained_fixups_header*)(this->_encodedData.start());
 	chainHeader->symbols_offset = this->_encodedData.size();
-	this->_encodedData.append_mem(stringPool.data(), stringPool.size());
+	this->_encodedData.append_mem(&stringPool[0], stringPool.size());
 
 	// align to pointer size
 	this->_encodedData.pad_to_size(sizeof(pint_t));
@@ -1406,6 +1405,25 @@ private:
 	typedef typename A::P::uint_t				pint_t;
 
 	const ld::Atom*								stubForResolverFunction(const ld::Atom* resolver) const;
+
+	struct TrieEntriesSorter
+	{
+		TrieEntriesSorter(const Options& o) : _options(o) {}
+		
+		 bool operator()(const mach_o::trie::Entry& left, const mach_o::trie::Entry& right)
+		 {
+			unsigned int leftOrder;
+			unsigned int rightOrder;
+			_options.exportedSymbolOrder(left.name, &leftOrder);
+			_options.exportedSymbolOrder(right.name, &rightOrder);
+			if ( leftOrder != rightOrder ) 
+				return (leftOrder < rightOrder);
+			else
+				return (left.address < right.address);
+		 }
+	private:
+		const Options&	_options;
+	};
 	
 	static ld::Section			_s_section;
 };
@@ -1434,36 +1452,28 @@ const ld::Atom* ExportInfoAtom<A>::stubForResolverFunction(const ld::Atom* resol
 template <typename A>
 void ExportInfoAtom<A>::encode() const
 {
-	uint64_t 							imageBaseAddress = this->_writer.headerAndLoadCommandsSection->address;
-	__block unsigned int				padding          = 0;
-
-
-	std::vector<const ld::Atom*> exportedAtoms;
-	exportedAtoms.reserve(this->_writer._exportedAtoms.size());
-	for (const ld::Atom* atom : this->_writer._exportedAtoms) {
+	// make vector of mach_o::trie::Entry for all exported symbols
+	std::vector<const ld::Atom*>& exports = this->_writer._exportedAtoms;
+	uint64_t imageBaseAddress = this->_writer.headerAndLoadCommandsSection->address;
+	std::vector<mach_o::trie::Entry> entries;
+	unsigned int padding = 0;
+	entries.reserve(exports.size());
+	for (std::vector<const ld::Atom*>::const_iterator it = exports.begin(); it != exports.end(); ++it) {
+		const ld::Atom* atom = *it;
+		mach_o::trie::Entry entry;
+		uint64_t flags = (atom->contentType() == ld::Atom::typeTLV) ? EXPORT_SYMBOL_FLAGS_KIND_THREAD_LOCAL : EXPORT_SYMBOL_FLAGS_KIND_REGULAR;
+		uint64_t other = 0;
+		uint64_t address = atom->finalAddress() - imageBaseAddress;
 		if ( atom->definition() == ld::Atom::definitionProxy ) {
-			if (const ld::dylib::File* dylib = dynamic_cast<const ld::dylib::File*>(atom->file()) ) {
-				if ( dylib->_reExported ) {
-					warning("not adding explicit re-export for symbol '%s' because it is already re-exported from dylib '%s'", atom->name(), dylib->installPath());
-					continue;
-				}
-			}
-		}
-		exportedAtoms.push_back(atom);
-	}
-
-    mach_o::ExportsTrie::Getter get = ^(size_t index) {
-		const ld::Atom* atom = exportedAtoms[index];
-        mach_o::ExportsTrie::Export exportedSymbol;
-		exportedSymbol.name = atom->name();
-		exportedSymbol.flags = (atom->contentType() == ld::Atom::typeTLV) ? EXPORT_SYMBOL_FLAGS_KIND_THREAD_LOCAL : EXPORT_SYMBOL_FLAGS_KIND_REGULAR;
-		exportedSymbol.other = 0;
-		exportedSymbol.offset = atom->finalAddress() - imageBaseAddress;
-		if ( atom->definition() == ld::Atom::definitionProxy ) {
-			exportedSymbol.flags |= EXPORT_SYMBOL_FLAGS_REEXPORT;
+			entry.name = atom->name();
+			entry.flags = flags | EXPORT_SYMBOL_FLAGS_REEXPORT;
 			if ( atom->combine() == ld::Atom::combineByName )
-				exportedSymbol.flags |= EXPORT_SYMBOL_FLAGS_WEAK_DEFINITION;
-			exportedSymbol.other = this->_writer.compressedOrdinalForAtom(atom);
+				entry.flags |= EXPORT_SYMBOL_FLAGS_WEAK_DEFINITION;
+			entry.other = this->_writer.compressedOrdinalForAtom(atom);
+			if ( entry.other == BIND_SPECIAL_DYLIB_SELF ) {
+				warning("not adding explict export for symbol %s because it is already re-exported from dylib %s", entry.name, atom->safeFilePath());
+				continue;
+			}
 			if ( atom->isAlias() ) {
 				// alias proxy means symbol was re-exported with a name change
 				const ld::Atom* aliasOf = NULL;
@@ -1474,53 +1484,61 @@ void ExportInfoAtom<A>::encode() const
 					}
 				}
 				assert(aliasOf != NULL);
-				exportedSymbol.importName = aliasOf->name();
+				entry.importName = aliasOf->name();
 			}
 			else {
 				// symbol name stays same as re-export
-				exportedSymbol.importName = "";
+				entry.importName = atom->name();
 			}
+			entries.push_back(entry);
 			//fprintf(stderr, "re-export %s from lib %llu as %s\n", entry.importName, entry.other, entry.name);
 		}
 		else if ( atom->definition() == ld::Atom::definitionAbsolute ) {
-			exportedSymbol.flags   = _options.canUseAbsoluteSymbols() ? EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE : EXPORT_SYMBOL_FLAGS_KIND_REGULAR;
-			exportedSymbol.offset  = atom->finalAddress();
+			entry.name = atom->name();
+			entry.flags = _options.canUseAbsoluteSymbols() ? EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE : EXPORT_SYMBOL_FLAGS_KIND_REGULAR;
+			entry.address = address;
+			entry.other = other;
+			entry.importName = NULL;
+			entries.push_back(entry);
 		}
 		else {
 			if ( (atom->definition() == ld::Atom::definitionRegular) && (atom->combine() == ld::Atom::combineByName) )
-				exportedSymbol.flags |= EXPORT_SYMBOL_FLAGS_WEAK_DEFINITION;
+				flags |= EXPORT_SYMBOL_FLAGS_WEAK_DEFINITION;
 			if ( atom->isThumb() )
-				exportedSymbol.offset |= 1;
+				address |= 1;
 			if ( atom->contentType() == ld::Atom::typeResolver ) {
-				exportedSymbol.flags |= EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER;
+				flags |= EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER;
 				// set normal lookup to return stub address
 				// and add resolver function in new location that newer dyld's can access
-				exportedSymbol.other = exportedSymbol.offset;
+				other = address;
 				const ld::Atom* stub = stubForResolverFunction(atom);
-				exportedSymbol.offset = stub->finalAddress() - imageBaseAddress;
+				address = stub->finalAddress() - imageBaseAddress;
 				if ( stub->isThumb() )
-					exportedSymbol.offset |= 1;
+					address |= 1;
 			}
+			entry.name = atom->name();
+			entry.flags = flags;
+			entry.address = address; 
+			entry.other = other; 
+			entry.importName = NULL;
+			entries.push_back(entry);
 		}
 
-		if ( _options.sharedRegionEligible() && (strncmp(atom->section().segmentName(), "__DATA", 6) == 0) ) {
+		if (_options.sharedRegionEligible() && strncmp(atom->section().segmentName(), "__DATA", 6) == 0) {
 			// Maximum address is 64bit which is 10 bytes as a uleb128. Minimum is 1 byte
 			// Pad the section out so we can deal with addresses getting larger when __DATA segment
-			// is moved before __TEXT in dyld shared cache
+			// is moved before __TEXT in dyld shared cache.
 			padding += 9;
 		}
-        return exportedSymbol;
-    };
+	}
 
-	mach_o::ExportsTrie trie(exportedAtoms.size(), get);
-	if ( mach_o::Error err = std::move(trie.buildError()) )
-		throwf("error creating exports trie: %s\n", err.message());
-	size_t          trieSize  = 0;
-	const uint8_t*  trieBytes = trie.bytes(trieSize);
+	// sort vector by -exported_symbols_order, and any others by address
+	std::sort(entries.begin(), entries.end(), TrieEntriesSorter(_options));
+	
+	// create trie
+	mach_o::trie::makeTrie(entries, this->_encodedData.bytes());
 
-	this->_encodedData.append_mem(trieBytes, trieSize);
-
-	// Add additional data padding for the dyld shared cache
+	//Add additional data padding for the unoptimized shared cache
 	for (unsigned int i = 0; i < padding; ++i)
 		this->_encodedData.append_byte(0);
 
@@ -1739,12 +1757,6 @@ void SplitSegInfoV1Atom<A>::uleb128EncodeAddresses(const std::vector<uint64_t>& 
 template <typename A>
 void SplitSegInfoV1Atom<A>::encode() const
 {
-	if ( !_options.sharedRegionEligible() && _options.emitSharedRegionMarker() ) {
-		assert(this->_encodedData.size() == 0);
-		this->_encoded = true;
-		return;
-	}
-
 	// sort into group by pointer adjustment kind
 	std::vector<OutputFile::SplitSegInfoEntry>& info = this->_writer._splitSegInfos;
 	for (std::vector<OutputFile::SplitSegInfoEntry>::const_iterator it = info.begin(); it != info.end(); ++it) {
@@ -1865,12 +1877,6 @@ ld::Section SplitSegInfoV2Atom<A>::_s_section("__LINKEDIT", "__splitSegInfo", ld
 template <typename A>
 void SplitSegInfoV2Atom<A>::encode() const
 {
-	if ( !_options.sharedRegionEligible() && _options.emitSharedRegionMarker() ) {
-		assert(this->_encodedData.size() == 0);
-		this->_encoded = true;
-		return;
-	}
-
 	// sort into group by adjustment kind
 	//fprintf(stderr, "_splitSegV2Infos.size=%lu\n", this->_writer._splitSegV2Infos.size());
 	WholeMap whole;
@@ -2078,54 +2084,56 @@ ld::Section DataInCodeAtom<A>::_s_section("__LINKEDIT", "__dataInCode", ld::Sect
 template <typename A>
 void DataInCodeAtom<A>::encode() const
 {
-	uint64_t mhAddress = 0;
-	for (std::vector<ld::Internal::FinalSection*>::iterator sit = _state.sections.begin(); sit != _state.sections.end(); ++sit) {
-		ld::Internal::FinalSection* sect = *sit;
-		if ( sect->type() == ld::Section::typeMachHeader )
-			mhAddress = sect->address;
-		if ( sect->type() != ld::Section::typeCode )
-			continue;
-		for (std::vector<const ld::Atom*>::iterator ait = sect->atoms.begin(); ait != sect->atoms.end(); ++ait) {
-			const ld::Atom*	atom = *ait;
-			// gather all code-in-data labels
-			std::vector<const ld::Fixup*> dataInCodeLabels;
-			for (ld::Fixup::iterator fit = atom->fixupsBegin(); fit != atom->fixupsEnd(); ++fit) {
-				switch ( fit->kind ) {
-					case ld::Fixup::kindDataInCodeStartData:
-					case ld::Fixup::kindDataInCodeStartJT8:
-					case ld::Fixup::kindDataInCodeStartJT16:
-					case ld::Fixup::kindDataInCodeStartJT32:
-					case ld::Fixup::kindDataInCodeStartJTA32:
-					case ld::Fixup::kindDataInCodeEnd:
-						dataInCodeLabels.push_back(fit);
-						break;
-					default:
-						break;
+	if ( this->_writer.hasDataInCode ) {
+		uint64_t mhAddress = 0;
+		for (std::vector<ld::Internal::FinalSection*>::iterator sit = _state.sections.begin(); sit != _state.sections.end(); ++sit) {
+			ld::Internal::FinalSection* sect = *sit;
+			if ( sect->type() == ld::Section::typeMachHeader )
+				mhAddress = sect->address;
+			if ( sect->type() != ld::Section::typeCode )
+				continue;
+			for (std::vector<const ld::Atom*>::iterator ait = sect->atoms.begin(); ait != sect->atoms.end(); ++ait) {
+				const ld::Atom*	atom = *ait;
+				// gather all code-in-data labels
+				std::vector<const ld::Fixup*> dataInCodeLabels;
+				for (ld::Fixup::iterator fit = atom->fixupsBegin(); fit != atom->fixupsEnd(); ++fit) {
+					switch ( fit->kind ) {
+						case ld::Fixup::kindDataInCodeStartData:
+						case ld::Fixup::kindDataInCodeStartJT8:
+						case ld::Fixup::kindDataInCodeStartJT16:
+						case ld::Fixup::kindDataInCodeStartJT32:
+						case ld::Fixup::kindDataInCodeStartJTA32:
+						case ld::Fixup::kindDataInCodeEnd:
+							dataInCodeLabels.push_back(fit);
+							break;
+						default:
+							break;
+					}
 				}
-			}
-			// to do: sort labels by address
-			std::sort(dataInCodeLabels.begin(), dataInCodeLabels.end(), FixupByAddressSorter());
-
-			// convert to array of struct data_in_code_entry
-			ld::Fixup::Kind prevKind = ld::Fixup::kindDataInCodeEnd;
-			uint32_t prevOffset = 0;
-			for ( std::vector<const ld::Fixup*>::iterator sfit = dataInCodeLabels.begin(); sfit != dataInCodeLabels.end(); ++sfit) {
-				if ( ((*sfit)->kind != prevKind) && (prevKind != ld::Fixup::kindDataInCodeEnd) ) {
-					int len = (*sfit)->offsetInAtom - prevOffset;
-					if ( len == 0 )
-						warning("overlapping data-in-code in '%s' at offset 0x%04X", atom->name(), prevOffset);
-					this->encodeEntry(atom->finalAddress()+prevOffset-mhAddress, (*sfit)->offsetInAtom - prevOffset, prevKind);
+				// to do: sort labels by address
+				std::sort(dataInCodeLabels.begin(), dataInCodeLabels.end(), FixupByAddressSorter());
+				
+				// convert to array of struct data_in_code_entry
+				ld::Fixup::Kind prevKind = ld::Fixup::kindDataInCodeEnd;
+				uint32_t prevOffset = 0;
+				for ( std::vector<const ld::Fixup*>::iterator sfit = dataInCodeLabels.begin(); sfit != dataInCodeLabels.end(); ++sfit) {
+					if ( ((*sfit)->kind != prevKind) && (prevKind != ld::Fixup::kindDataInCodeEnd) ) {
+						int len = (*sfit)->offsetInAtom - prevOffset;
+						if ( len == 0 )
+							warning("overlapping data-in-code in '%s' at offset 0x%04X", atom->name(), prevOffset);
+						this->encodeEntry(atom->finalAddress()+prevOffset-mhAddress, (*sfit)->offsetInAtom - prevOffset, prevKind);
+					}
+					prevKind = (*sfit)->kind;
+					prevOffset = (*sfit)->offsetInAtom;
 				}
-				prevKind = (*sfit)->kind;
-				prevOffset = (*sfit)->offsetInAtom;
-			}
-			if ( prevKind != ld::Fixup::kindDataInCodeEnd ) {
-				// add entry if function ends with data
-				this->encodeEntry(atom->finalAddress()+prevOffset-mhAddress, atom->size() - prevOffset, prevKind);
+				if ( prevKind != ld::Fixup::kindDataInCodeEnd ) {
+					// add entry if function ends with data
+					this->encodeEntry(atom->finalAddress()+prevOffset-mhAddress, atom->size() - prevOffset, prevKind);
+				}
 			}
 		}
 	}
-
+	
 	this->_encoded = true;
 }
 
@@ -2285,15 +2293,15 @@ void CodeSignatureAtom::encode() const
 	}
 	libcd_set_exec_seg(_sigRef, 0, textSize, flags);
 
+	// update section size now that code signature size is known
+	codeSignSect->size = libcd_superblob_size(_sigRef);
+
 	// allocate space for code-signature (never used, sign is written directly to output buffer in hash())
-	this->_encodedData.alloc(libcd_superblob_size(_sigRef));
+	this->_encodedData.alloc(codeSignSect->size);
 
 	// align to pointer size
 	this->_encodedData.pad_to_size(8);
 	this->_encoded = true;
-
-	// update section size now that code signature size + padding is known
-	codeSignSect->size = this->_encodedData.size();
 }
 
 void CodeSignatureAtom::hash(uint8_t* wholeFileBuffer) const

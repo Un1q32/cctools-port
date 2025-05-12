@@ -1057,42 +1057,11 @@ void dumper::dumpFixup(const ld::Fixup* ref)
 			printf("store auth 64-bit little endian address of %s", referenceTargetAtomName(ref));
 			break;
 #endif
-#if SUPPORT_ARCH_riscv32
-		case ld::Fixup::kindStoreRISCVBranch20:
-			printf(", then store as RISC-V 20-bit pcrel branch");
-			break;
-		case ld::Fixup::kindStoreRISCVhi20:
-			printf(", then store as RISC-V hi20 absolute reference");
-			break;
-		case ld::Fixup::kindStoreRISCVlo12:
-			printf(", then store as RISC-V lo20 absolute reference ");
-			break;
-		case ld::Fixup::kindStoreRISCVhi20GOT:
-			printf(", then store as RISC-V hi20 absolute reference to GOT");
-			break;
-		case ld::Fixup::kindStoreRISCVlo12GOT:
-			printf(", then store as RISC-V lo20 absolute reference to GOT");
-			break;
-		case ld::Fixup::kindStoreRISCVhi20PCRel:
-			printf(", then store as RISC-V hi20 pc-rel reference");
-			break;
-		case ld::Fixup::kindStoreRISCVlo12PCRel:
-			printf(", then store as RISC-V lo20 pc-rel reference");
-			break;
-		case ld::Fixup::kindStoreRISCVhi20PCRelGOT:
-			printf(", then store as RISC-V hi20 pc-rel reference to GOT");
-			break;
-		case ld::Fixup::kindStoreRISCVlo12PCRelGOT:
-			printf(", then store as RISC-V lo20 pc-rel reference to GOT");
-			break;
-#endif // SUPPORT_ARCH_riscv32
-
 		//default:
 		//	printf("unknown fixup");
 		//	break;
 	}
 }
-
 
 uint64_t dumper::addressOfFirstAtomInSection(const ld::Section& sect)
 {
@@ -1301,9 +1270,6 @@ static ld::relocatable::File* createReader(const char* path)
 			}
 		}
 	}
-	else if ( (mh->magic == MH_MAGIC) || (mh->magic == MH_MAGIC_64) ) {
-		sPreferredArch = mh->cputype;
-	}
 
 	mach_o::relocatable::ParserOptions objOpts;
 	objOpts.architecture		= sPreferredArch;
@@ -1321,7 +1287,6 @@ static ld::relocatable::File* createReader(const char* path)
 	objOpts.treateBitcodeAsData = false;
 	objOpts.usingBitcode		= true;
 	objOpts.forceHidden			= false;
-	objOpts.avoidMisalignedPointers = false;
 #if 1
 	if ( ! foundFatSlice ) {
 		cpu_type_t archOfObj;
@@ -1338,12 +1303,10 @@ static ld::relocatable::File* createReader(const char* path)
 		return objResult;
 
 #ifdef LTO_SUPPORT
-#if 0
 	// see if it is an llvm object file
 	objResult = lto::parse(p, fileLen, path, stat_buf.st_mtime, ld::File::Ordinal::NullOrdinal(), sPreferredArch, sPreferredSubArch, false, true);
 	if ( objResult != NULL ) 
 		return objResult;
-#endif 
 #endif /* LTO_SUPPORT */
 
 	throwf("not a mach-o object file: %s", path);
@@ -1417,7 +1380,8 @@ int main(int argc, const char* argv[])
 					for (const ArchInfo* t=archInfoArray; t->archName != NULL; ++t) {
 						if ( strcmp(t->archName,archName) == 0 ) {
 							sPreferredArch = t->cpuType;
-							sPreferredSubArch = t->cpuSubType;
+							if ( t->isSubType )
+								sPreferredSubArch = t->cpuSubType;
 							found = true;
 						}
 					}

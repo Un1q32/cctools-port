@@ -226,9 +226,7 @@ struct string_list* at_paths, int *hint_p)
       }
       
       // Make sure the malloc'd buffer is zero terminated.
-      if (sb.st_size) {
-        *(addr + sb.st_size) = '\0';
-      }
+      *(addr + sb.st_size) = '\0';
 
       if (close(fd)) {
         free(addr);

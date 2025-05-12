@@ -28,7 +28,6 @@
 #include <unistd.h>
 #include <dlfcn.h>
 
-#include <algorithm>
 #include <vector>
 #include <map>
 

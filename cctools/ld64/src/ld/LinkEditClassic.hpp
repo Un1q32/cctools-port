@@ -31,11 +31,13 @@
 #include <limits.h>
 #include <unistd.h>
 
+#include <vector>
+#include <unordered_map>
+
 #include "Options.h"
 #include "ld.hpp"
 #include "Architectures.hpp"
 #include "MachOFileAbstraction.hpp"
-#include "Containers.h"
 
 namespace ld {
 namespace tool {
@@ -52,7 +54,6 @@ public:
 
 	virtual void								encode() = 0;
 	virtual bool								hasStabs(uint32_t& ssos, uint32_t& ssoe, uint32_t& sos, uint32_t& soe) { return false; }
-	virtual bool								isAltEntry(const ld::Atom* atom) { return false; }
 
 												ClassicLinkEditAtom(const Options& opts, ld::Internal& state, 
 																OutputFile& writer, const ld::Section& sect,
@@ -91,14 +92,13 @@ public:
 
 private:
 	enum { kBufferSize = 0x01000000 };
-	using StringToOffset = CStringMap<int32_t>;
+	typedef std::unordered_map<std::string, int32_t> StringToOffset;
 
 	const uint32_t							_pointerSize;
 	std::vector<char*>						_fullBuffers;
 	char*									_currentBuffer;
 	uint32_t								_currentBufferUsed;
 	StringToOffset							_uniqueStrings;
-	bool									_skipUniquing;
 
 	static ld::Section			_s_section;
 };
@@ -108,19 +108,13 @@ ld::Section StringPoolAtom::_s_section("__LINKEDIT", "__string_pool", ld::Sectio
 
 StringPoolAtom::StringPoolAtom(const Options& opts, ld::Internal& state, OutputFile& writer, int pointerSize)
 	: ClassicLinkEditAtom(opts, state, writer, _s_section, pointerSize), 
-	 _pointerSize(pointerSize), _currentBuffer(NULL), _currentBufferUsed(0), _skipUniquing(false)
+	 _pointerSize(pointerSize), _currentBuffer(NULL), _currentBufferUsed(0)
 {
 	_currentBuffer = new char[kBufferSize];
 	// burn first byte of string pool (so zero is never a valid string offset)
 	_currentBuffer[_currentBufferUsed++] = ' ';
 	// make offset 1 always point to an empty string
 	_currentBuffer[_currentBufferUsed++] = '\0';
-
-	// guestimate symbol count as being double the number of global symbols
-	_uniqueStrings.reserve(state.indirectBindingTable.size()*2);
-
-	// to improve linking perfomance, don't dedup symbol strings in debug builds
-	_skipUniquing = !opts.deduplicateFunctions();
 }
 
 uint64_t StringPoolAtom::size() const
@@ -172,19 +166,14 @@ uint32_t StringPoolAtom::currentOffset()
 
 int32_t StringPoolAtom::addUnique(const char* str)
 {
-	if ( _skipUniquing ) {
-		return this->add(str);
+	StringToOffset::iterator pos = _uniqueStrings.find(str);
+	if ( pos != _uniqueStrings.end() ) {
+		return pos->second;
 	}
 	else {
-		StringToOffset::iterator pos = _uniqueStrings.find(str);
-		if ( pos != _uniqueStrings.end() ) {
-			return pos->second;
-		}
-		else {
-			int32_t offset = this->add(str);
-			_uniqueStrings[str] = offset;
-			return offset;
-		}
+		int32_t offset = this->add(str);
+		_uniqueStrings[str] = offset;
+		return offset;
 	}
 }
 
@@ -222,7 +211,6 @@ public:
 	// overrides of ClassicLinkEditAtom
 	virtual void								encode();
 	virtual bool								hasStabs(uint32_t& ssos, uint32_t& ssoe, uint32_t& sos, uint32_t& soe);
-	virtual bool								isAltEntry(const ld::Atom* atom);
 
 private:
 	typedef typename A::P						P;
@@ -236,6 +224,7 @@ private:
 	uint32_t						stringOffsetForStab(const ld::relocatable::File::Stab& stab, StringPoolAtom* pool);
 	uint64_t						valueForStab(const ld::relocatable::File::Stab& stab);
 	uint8_t							sectionIndexForStab(const ld::relocatable::File::Stab& stab);
+	bool							isAltEntry(const ld::Atom* atom);
 
 	mutable std::vector<macho_nlist<P> >	_globals;
 	mutable std::vector<macho_nlist<P> >	_locals;
@@ -296,21 +285,15 @@ bool SymbolTableAtom<A>::addLocal(const ld::Atom* atom, StringPoolAtom* pool)
 	assert(atom->symbolTableInclusion() != ld::Atom::symbolTableNotIn);
 	 
 	// set n_strx
-	const char*      symbolName = atom->name();
-	std::string_view userName   = atom->getUserVisibleName();
-	if ( userName != symbolName ) {
-		//  name had .llvm.* on the end, make a new string without that suffix
-		std::string* namestr = new std::string(userName);
-		symbolName = namestr->c_str();
-	}
-
+	std::string nameStr = std::string(atom->getUserVisibleName());
+	const char* symbolName = nameStr.c_str();
+	char anonName[32];
 	if ( this->_options.outputKind() == Options::kObjectFile ) {
 		if ( atom->contentType() == ld::Atom::typeCString ) {
 			if ( atom->combine() == ld::Atom::combineByNameAndContent ) {
 				// don't use 'l' labels for x86_64 strings
 				// <rdar://problem/6605499> x86_64 obj-c runtime confused when static lib is stripped
-				char* anonName;
-				asprintf(&anonName, "LC%u", _s_anonNameIndex++);
+				sprintf(anonName, "LC%u", _s_anonNameIndex++);
 				symbolName = anonName;
 			}
 		}
@@ -324,10 +307,8 @@ bool SymbolTableAtom<A>::addLocal(const ld::Atom* atom, StringPoolAtom* pool)
 				symbolName = "func.eh";
 		}
 		else if ( atom->symbolTableInclusion() == ld::Atom::symbolTableInWithRandomAutoStripLabel ) {
-			// make auto-strip anonymous name for symbol
-			char* anonName;
-			asprintf(&anonName, "l%03u", _s_anonNameIndex++);
-			//fprintf(stderr, "rename %s to %s\n", symbolName, anonName);
+			// make auto-strip anonymous name for symbol 
+			sprintf(anonName, "l%03u", _s_anonNameIndex++);
 			symbolName = anonName;
 		}
 	}
@@ -635,10 +616,7 @@ uint64_t SymbolTableAtom<A>::valueForStab(const ld::relocatable::File::Stab& sta
 			else
 				return 0;  // <rdar://problem/7811357> work around for mismatch N_BNSYM 
 		case N_ENSYM:
-			if ( stab.atom != NULL )
-				return stab.atom->finalAddress();
-			else
-				return 0;  // <rdar://93130909> work around for mismatch N_ENSYM
+			return stab.atom->size();
 		case N_SO:
 			if ( stab.atom == NULL ) {
 				return 0;
@@ -669,7 +647,6 @@ uint32_t SymbolTableAtom<A>::stringOffsetForStab(const ld::relocatable::File::St
 				break;
 			}
 			// fall into uniquing case
-			[[clang::fallthrough]];
 		case N_SOL:
 		case N_BINCL:
 		case N_EXCL:
@@ -712,23 +689,35 @@ void SymbolTableAtom<A>::encode()
 	// make nlist entries for all global symbols
 	std::vector<const ld::Atom*>& globalAtoms = this->_writer._exportedAtoms;
 	_globals.reserve(globalAtoms.size());
-	for (const ld::Atom* atom : globalAtoms) {
+	uint32_t symbolIndex = localsCount;
+	this->_writer._globalSymbolsStartIndex = localsCount;
+	for (std::vector<const ld::Atom*>::const_iterator it=globalAtoms.begin(); it != globalAtoms.end(); ++it) {
+		const ld::Atom* atom = *it;
 		this->addGlobal(atom, this->_writer._stringPoolAtom);
+		this->_writer._atomToSymbolIndex[atom] = symbolIndex++;
 	}
+	this->_writer._globalSymbolsCount = symbolIndex - this->_writer._globalSymbolsStartIndex;
 
 	// make nlist entries for all undefined (imported) symbols
 	std::vector<const ld::Atom*>& importAtoms = this->_writer._importedAtoms;
 	_imports.reserve(importAtoms.size());
-	for (const ld::Atom* atom : importAtoms) {
-		this->addImport(atom, this->_writer._stringPoolAtom);
+	this->_writer._importSymbolsStartIndex = symbolIndex;
+	for (std::vector<const ld::Atom*>::const_iterator it=importAtoms.begin(); it != importAtoms.end(); ++it) {
+		this->addImport(*it, this->_writer._stringPoolAtom);
+		this->_writer._atomToSymbolIndex[*it] = symbolIndex++;
 	}
+	this->_writer._importSymbolsCount = symbolIndex - this->_writer._importSymbolsStartIndex;
 
 	// go back to start and make nlist entries for all local symbols
 	std::vector<const ld::Atom*>& localAtoms = this->_writer._localAtoms;
+	this->_writer._localSymbolsStartIndex = 0;
+	symbolIndex = 0;
 	_locals.reserve(localsCount);
 	for (const ld::Atom* atom : localAtoms) {
-		this->addLocal(atom, this->_writer._stringPoolAtom);
+		if ( this->addLocal(atom, this->_writer._stringPoolAtom) )
+			this->_writer._atomToSymbolIndex[atom] = symbolIndex++;
 	}
+	_stabsIndexStart = symbolIndex;
 	_stabsStringsOffsetStart = this->_writer._stringPoolAtom->currentOffset();
 	for (const ld::relocatable::File::Stab& stab : _state.stabs) {
 		macho_nlist<P> entry;
@@ -738,11 +727,11 @@ void SymbolTableAtom<A>::encode()
 		entry.set_n_value(valueForStab(stab));
 		entry.set_n_strx(stringOffsetForStab(stab, this->_writer._stringPoolAtom));
 		_locals.push_back(entry);
+		++symbolIndex;
 	}
-	_stabsIndexStart = this->_writer._localSymbolsStartIndex + this->_writer._localSymbolsCount;
-	_stabsIndexEnd = _stabsIndexStart + _state.stabs.size();
+	_stabsIndexEnd = symbolIndex;
 	_stabsStringsOffsetEnd = this->_writer._stringPoolAtom->currentOffset();
-	this->_writer._localSymbolsCount += _state.stabs.size();
+	this->_writer._localSymbolsCount = symbolIndex;
 }
 
 template <typename A>
@@ -754,11 +743,11 @@ uint64_t SymbolTableAtom<A>::size() const
 template <typename A>
 void SymbolTableAtom<A>::copyRawContent(uint8_t buffer[]) const
 {
-	memcpy(&buffer[this->_writer._localSymbolsStartIndex*sizeof(macho_nlist<P>)], _locals.data(),
+	memcpy(&buffer[this->_writer._localSymbolsStartIndex*sizeof(macho_nlist<P>)], &_locals[0], 
 												this->_writer._localSymbolsCount*sizeof(macho_nlist<P>));
-	memcpy(&buffer[this->_writer._globalSymbolsStartIndex*sizeof(macho_nlist<P>)], _globals.data(),
+	memcpy(&buffer[this->_writer._globalSymbolsStartIndex*sizeof(macho_nlist<P>)], &_globals[0],
 												this->_writer._globalSymbolsCount*sizeof(macho_nlist<P>));
-	memcpy(&buffer[this->_writer._importSymbolsStartIndex *sizeof(macho_nlist<P>)], _imports.data(),
+	memcpy(&buffer[this->_writer._importSymbolsStartIndex *sizeof(macho_nlist<P>)], &_imports[0], 
 												this->_writer._importSymbolsCount*sizeof(macho_nlist<P>));
 }
 
@@ -803,10 +792,14 @@ private:
 
 uint32_t RelocationsAtomAbstract::symbolIndex(const ld::Atom* atom) const
 {
-	if ( !atom->hasOutputSymbolIndex() )
-		throwf("internal error: atom is missing a symbolIndex(%s)", atom->name());
-
-	return atom->outputSymbolIndex();
+	std::map<const ld::Atom*, uint32_t>::iterator pos = this->_writer._atomToSymbolIndex.find(atom);
+	if ( pos != this->_writer._atomToSymbolIndex.end() )
+		return pos->second;
+	fprintf(stderr, "_atomToSymbolIndex content:\n");
+	for(std::map<const ld::Atom*, uint32_t>::iterator it = this->_writer._atomToSymbolIndex.begin(); it != this->_writer._atomToSymbolIndex.end(); ++it) {
+			fprintf(stderr, "%p(%s) => %d\n", it->first, it->first->name(), it->second);
+	}
+	throwf("internal error: atom not found in symbolIndex(%s)", atom->name());
 }
 
 
@@ -911,7 +904,7 @@ uint64_t LocalRelocationsAtom<A>::size() const
 template <typename A>
 void LocalRelocationsAtom<A>::copyRawContent(uint8_t buffer[]) const
 {
-	memcpy(buffer, _relocs.data(), _relocs.size()*sizeof(macho_relocation_info<P>));
+	memcpy(buffer, &_relocs[0], _relocs.size()*sizeof(macho_relocation_info<P>));
 }
 
 
@@ -1035,10 +1028,6 @@ template <> uint32_t ExternalRelocationsAtom<arm>::pointerReloc() { return ARM_R
 template <> uint32_t ExternalRelocationsAtom<x86>::pointerReloc() { return GENERIC_RELOC_VANILLA; }
 template <> uint32_t ExternalRelocationsAtom<x86_64>::pointerReloc() { return X86_64_RELOC_UNSIGNED; }
 
-template <> uint32_t ExternalRelocationsAtom<riscv32>::pointerReloc() {
-	assert(0 && "external pointer reloc not implemented");
-	return 0;
-}
 
 template <> uint32_t ExternalRelocationsAtom<x86_64>::callReloc() { return X86_64_RELOC_BRANCH; }
 template <> uint32_t ExternalRelocationsAtom<x86>::callReloc() { return GENERIC_RELOC_VANILLA; }
@@ -1178,7 +1167,7 @@ void SectionRelocationsAtom<A>::copyRawContent(uint8_t buffer[]) const
 	uint32_t offset = 0;
 	for(typename std::vector<SectionAndEntries>::const_iterator it=_entriesBySection.begin(); it != _entriesBySection.end(); ++it) {
 		const SectionAndEntries& se = *it;
-		memcpy(&buffer[offset], se.relocs.data(), se.relocs.size()*sizeof(macho_relocation_info<P>));
+		memcpy(&buffer[offset], &se.relocs[0], se.relocs.size()*sizeof(macho_relocation_info<P>));
 		offset += (se.relocs.size() * sizeof(macho_relocation_info<P>));
 	}
 }
@@ -1806,7 +1795,6 @@ void SectionRelocationsAtom<arm64>::encodeSectionReloc(ld::Internal::FinalSectio
 				relocs.push_back(reloc2);
 			}
 			// fall into next case
-			[[clang::fallthrough]];
 		case ld::Fixup::kindStoreTargetAddressARM64Branch26:
 		case ld::Fixup::kindStoreARM64DtraceCallSiteNop:
 		case ld::Fixup::kindStoreARM64DtraceIsEnableSiteClear:
@@ -1831,7 +1819,6 @@ void SectionRelocationsAtom<arm64>::encodeSectionReloc(ld::Internal::FinalSectio
 				relocs.push_back(reloc2);
 			}
 			// fall into next case
-			[[clang::fallthrough]];
 		case ld::Fixup::kindStoreTargetAddressARM64Page21:
 			reloc1.set_r_address(address);
 			reloc1.set_r_symbolnum(symbolNum);
@@ -1854,7 +1841,6 @@ void SectionRelocationsAtom<arm64>::encodeSectionReloc(ld::Internal::FinalSectio
 				relocs.push_back(reloc2);
 			}
 			// fall into next case
-			[[clang::fallthrough]];
 		case ld::Fixup::kindStoreTargetAddressARM64PageOff12:
 		case ld::Fixup::kindStoreTargetAddressARM64PageOff12ConvertAddToLoad:
 			reloc1.set_r_address(address);
@@ -2058,7 +2044,6 @@ void SectionRelocationsAtom<arm64_32>::encodeSectionReloc(ld::Internal::FinalSec
 				relocs.push_back(reloc2);
 			}
 			// fall into next case
-			[[clang::fallthrough]];
 		case ld::Fixup::kindStoreTargetAddressARM64Branch26:
 		case ld::Fixup::kindStoreARM64DtraceCallSiteNop:
 		case ld::Fixup::kindStoreARM64DtraceIsEnableSiteClear:
@@ -2083,7 +2068,6 @@ void SectionRelocationsAtom<arm64_32>::encodeSectionReloc(ld::Internal::FinalSec
 				relocs.push_back(reloc2);
 			}
 			// fall into next case
-			[[clang::fallthrough]];
 		case ld::Fixup::kindStoreTargetAddressARM64Page21:
 			reloc1.set_r_address(address);
 			reloc1.set_r_symbolnum(symbolNum);
@@ -2106,7 +2090,6 @@ void SectionRelocationsAtom<arm64_32>::encodeSectionReloc(ld::Internal::FinalSec
 				relocs.push_back(reloc2);
 			}
 			// fall into next case
-			[[clang::fallthrough]];
 		case ld::Fixup::kindStoreTargetAddressARM64PageOff12:
 		case ld::Fixup::kindStoreTargetAddressARM64PageOff12ConvertAddToLoad:
 			reloc1.set_r_address(address);
@@ -2252,141 +2235,6 @@ void SectionRelocationsAtom<arm64_32>::encodeSectionReloc(ld::Internal::FinalSec
 }
 #endif // SUPPORT_ARCH_arm64_32
 
-#if SUPPORT_ARCH_riscv32
-template <>
-void SectionRelocationsAtom<riscv32>::encodeSectionReloc(ld::Internal::FinalSection* sect,
-														  const Entry& entry, std::vector<macho_relocation_info<P> >& relocs)
-{
-	macho_relocation_info<P> reloc1;
-	macho_relocation_info<P> reloc2;
-	uint64_t address = entry.inAtom->finalAddress()+entry.offsetInAtom - sect->address;
-	bool external = entry.toTargetUsesExternalReloc;
-	uint32_t symbolNum = sectSymNum(external, entry.toTarget);
-	bool fromExternal = false;
-	uint32_t fromSymbolNum = 0;
-	if ( entry.fromTarget != NULL ) {
-		fromExternal = entry.fromTargetUsesExternalReloc;
-		fromSymbolNum = sectSymNum(fromExternal, entry.fromTarget);
-	}
-
-	switch ( entry.kind ) {
-		case ld::Fixup::kindStoreRISCVBranch20:
-			if ( entry.toAddend != 0 ) {
-				reloc2.set_r_address(address);
-				reloc2.set_r_symbolnum(entry.toAddend);
-				reloc2.set_r_pcrel(false);
-				reloc2.set_r_length(2);
-				reloc2.set_r_extern(false);
-				reloc2.set_r_type(RISCV_RELOC_ADDEND);
-				relocs.push_back(reloc2);
-			}
-			reloc1.set_r_address(address);
-			reloc1.set_r_symbolnum(symbolNum);
-			reloc1.set_r_pcrel(true);
-			reloc1.set_r_length(2);
-			reloc1.set_r_extern(external);
-			reloc1.set_r_type(RISCV_RELOC_BRANCH20);
-			relocs.push_back(reloc1);
-			break;
-
-		case ld::Fixup::kindStoreRISCVhi20:
-		case ld::Fixup::kindStoreRISCVhi20PCRel:
-			if ( entry.toAddend != 0 ) {
-				reloc2.set_r_address(address);
-				reloc2.set_r_symbolnum(entry.toAddend);
-				reloc2.set_r_pcrel(false);
-				reloc2.set_r_length(2);
-				reloc2.set_r_extern(false);
-				reloc2.set_r_type(RISCV_RELOC_ADDEND);
-				relocs.push_back(reloc2);
-			}
-			reloc1.set_r_address(address);
-			reloc1.set_r_symbolnum(symbolNum);
-			reloc1.set_r_pcrel(ld::Fixup::kindStoreRISCVhi20PCRel == entry.kind);
-			reloc1.set_r_length(2);
-			reloc1.set_r_extern(external);
-			reloc1.set_r_type(RISCV_RELOC_HI20);
-			relocs.push_back(reloc1);
-			break;
-
-		case ld::Fixup::kindStoreRISCVlo12:
-		case ld::Fixup::kindStoreRISCVlo12PCRel:
-			if ( entry.toAddend != 0 ) {
-				reloc2.set_r_address(address);
-				reloc2.set_r_symbolnum(entry.toAddend);
-				reloc2.set_r_pcrel(false);
-				reloc2.set_r_length(2);
-				reloc2.set_r_extern(false);
-				reloc2.set_r_type(RISCV_RELOC_ADDEND);
-				relocs.push_back(reloc2);
-			}
-			reloc1.set_r_address(address);
-			reloc1.set_r_symbolnum(symbolNum);
-			reloc1.set_r_pcrel(ld::Fixup::kindStoreRISCVlo12PCRel == entry.kind);
-			reloc1.set_r_length(2);
-			reloc1.set_r_extern(true);
-			reloc1.set_r_type(RISCV_RELOC_LO12);
-			relocs.push_back(reloc1);
-			break;
-
-		case ld::Fixup::kindStoreRISCVhi20GOT:
-		case ld::Fixup::kindStoreRISCVhi20PCRelGOT:
-			reloc1.set_r_address(address);
-			reloc1.set_r_symbolnum(symbolNum);
-			reloc1.set_r_pcrel(ld::Fixup::kindStoreRISCVhi20PCRelGOT == entry.kind);
-			reloc1.set_r_length(2);
-			reloc1.set_r_extern(external);
-			reloc1.set_r_type(RISCV_RELOC_HI20_GOT);
-			relocs.push_back(reloc1);
-			break;
-
-		case ld::Fixup::kindStoreRISCVlo12GOT:
-		case ld::Fixup::kindStoreRISCVlo12PCRelGOT:
-			reloc1.set_r_address(address);
-			reloc1.set_r_symbolnum(symbolNum);
-			reloc1.set_r_pcrel(ld::Fixup::kindStoreRISCVlo12PCRelGOT == entry.kind);
-			reloc1.set_r_length(2);
-			reloc1.set_r_extern(true);
-			reloc1.set_r_type(RISCV_RELOC_LO12_GOT);
-			relocs.push_back(reloc1);
-			break;
-
-		case ld::Fixup::kindStoreLittleEndian32:
-		case ld::Fixup::kindStoreTargetAddressLittleEndian32:
-			if ( entry.fromTarget != NULL ) {
-				// this is a pointer-diff
-				reloc1.set_r_address(address);
-				reloc1.set_r_symbolnum(symbolNum);
-				reloc1.set_r_pcrel(false);
-				reloc1.set_r_length(2);
-				reloc1.set_r_extern(external);
-				reloc1.set_r_type(RISCV_RELOC_UNSIGNED);
-				reloc2.set_r_address(address);
-				reloc2.set_r_symbolnum(fromSymbolNum);
-				reloc2.set_r_pcrel(false);
-				reloc2.set_r_length(2);
-				reloc2.set_r_extern(fromExternal);
-				reloc2.set_r_type(RISCV_RELOC_SUBTRACTOR);
-				relocs.push_back(reloc2);
-				relocs.push_back(reloc1);
-			} else {
-				// regular pointer
-				reloc1.set_r_address(address);
-				reloc1.set_r_symbolnum(symbolNum);
-				reloc1.set_r_pcrel(false);
-				reloc1.set_r_length(2);
-				reloc1.set_r_extern(external);
-				reloc1.set_r_type(RISCV_RELOC_UNSIGNED);
-				relocs.push_back(reloc1);
-			}
-			break;
-		default:
-			assert(0 && "need to handle risc-v -r reloc");
-
-	}
-}
-#endif
-
 template <typename A>
 void SectionRelocationsAtom<A>::addSectionReloc(ld::Internal::FinalSection*	sect, ld::Fixup::Kind kind, 
 												const ld::Atom* inAtom, uint32_t offsetInAtom,  
@@ -2505,10 +2353,14 @@ ld::Section IndirectSymbolTableAtom<A>::_s_section("__LINKEDIT", "__ind_sym_tab"
 template <typename A>
 uint32_t IndirectSymbolTableAtom<A>::symbolIndex(const ld::Atom* atom)
 {
-	if ( !atom->hasOutputSymbolIndex() )
-		throwf("internal error: atom is missing a symbolIndex(%s)", atom->name());
-
-	return atom->outputSymbolIndex();
+	std::map<const ld::Atom*, uint32_t>::iterator pos = this->_writer._atomToSymbolIndex.find(atom);
+	if ( pos != this->_writer._atomToSymbolIndex.end() )
+		return pos->second;
+	//fprintf(stderr, "_atomToSymbolIndex content:\n");
+	//for(std::map<const ld::Atom*, uint32_t>::iterator it = this->_writer._atomToSymbolIndex.begin(); it != this->_writer._atomToSymbolIndex.end(); ++it) {
+	//		fprintf(stderr, "%p(%s) => %d\n", it->first, it->first->name(), it->second);
+	//}
+	throwf("internal error: atom not found in symbolIndex(%s)", atom->name());
 }
 
 template <typename A>

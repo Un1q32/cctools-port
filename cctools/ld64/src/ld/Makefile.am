@@ -3,7 +3,7 @@ SUBDIRS = parsers passes
 bin_PROGRAMS = ld
 ld_LDADD =  \
 	$(top_builddir)/ld64/src/3rd/libhelper.la  \
-  $(top_builddir)/ld64/src/mach_o/libmacho.la \
+	$(top_builddir)/ld64/src/3rd/BlocksRuntime/libBlocksRuntime.la  \
 	$(top_builddir)/ld64/src/ld/parsers/libParsers.la \
 	$(top_builddir)/ld64/src/ld/passes/libPasses.la \
 	$(UUID_LIB) \
@@ -14,7 +14,7 @@ ld_LDADD =  \
 	$(REALLOCF_LIB) \
 	$(DISPATCH_LIB)
 
-ld_LDFLAGS = $(PTHREAD_FLAGS) $(EXECINFO_LIB) $(BLOCKS_RUNTIME_LIB)
+ld_LDFLAGS = $(PTHREAD_FLAGS) $(EXECINFO_LIB)
 
 ld_CXXFLAGS =  \
 	-D__DARWIN_UNIX03 \
@@ -27,11 +27,11 @@ ld_CXXFLAGS =  \
 	-I$(top_srcdir)/ld64/src \
 	-I$(top_srcdir)/ld64/src/abstraction \
 	-I$(top_srcdir)/ld64/src/3rd \
+	-I$(top_srcdir)/ld64/src/3rd/BlocksRuntime \
 	-I$(top_srcdir)/ld64/src/3rd/include \
 	-I$(top_srcdir)/ld64/src/ld \
 	-I$(top_srcdir)/ld64/src/ld/parsers \
 	-I$(top_srcdir)/ld64/src/ld/passes \
-	-I$(top_srcdir)/ld64/src/mach_o \
 	-DPROGRAM_PREFIX="\"$(PROGRAM_PREFIX)\""
 
 ld_CFLAGS =  \
@@ -45,10 +45,10 @@ ld_CFLAGS =  \
 	-I$(top_srcdir)/ld64/src \
 	-I$(top_srcdir)/ld64/src/abstraction \
 	-I$(top_srcdir)/ld64/src/3rd \
+	-I$(top_srcdir)/ld64/src/3rd/BlocksRuntime \
 	-I$(top_srcdir)/ld64/src/ld \
 	-I$(top_srcdir)/ld64/src/ld/parsers \
 	-I$(top_srcdir)/ld64/src/ld/passes \
-	-I$(top_srcdir)/ld64/src/mach_o \
 	-DPROGRAM_PREFIX="\"$(PROGRAM_PREFIX)\"" 
 
 ld_SOURCES =  \
@@ -64,5 +64,4 @@ ld_SOURCES =  \
 	PlatformSupport.cpp \
 	ResponseFiles.cpp \
 	FatFile.cpp \
-	Mangling.cpp \
 	code-sign-blobs/blob.cpp

@@ -29,7 +29,6 @@
 #include <dlfcn.h>
 #include <mach/machine.h>
 
-#include <algorithm>
 #include <vector>
 #include <map>
 #include <set>
@@ -39,14 +38,13 @@
 
 #include "ld.hpp"
 #include "objc.h"
-#include "Containers.h"
 
 namespace ld {
 namespace passes {
 namespace objc {
 
 
-using NameToAtom = CStringMap<const ld::Atom*>;
+typedef std::unordered_map<const char*, const ld::Atom*, ld::CStringHash, ld::CStringEquals> NameToAtom;
 
 struct objc_image_info  {
 	uint32_t	version;	// initially 0
@@ -146,6 +144,7 @@ private:
 	bool									_is64;
 	
 	static ld::Section						_s_section;
+	static ld::Section						_s_sectionWeak;
 };
 
 ld::Section SelRefAtom::_s_section("__DATA", "__objc_selrefs", ld::Section::typeCStringPointer);
@@ -180,6 +179,7 @@ private:
 	bool									_is64;
 
 	static ld::Section						_s_section;
+	static ld::Section						_s_sectionWeak;
 };
 
 ld::Section NonLazyClassListAtom::_s_section("__DATA", "__objc_nlclslist", ld::Section::typeObjC2ClassList);
@@ -1117,6 +1117,8 @@ void CategoryOverlayAtom<A>::addClassPropertyListFixup()
 }
 
 
+
+
 //
 // Encapsulates merging of ObjC categories
 //
@@ -1235,29 +1237,22 @@ bool OptimizeCategories<A>::hasClassProperties(ld::Internal& state, const std::v
 	return false;
 }
 
-static const ld::Atom* getFollowOnAtom(const ld::Internal& state, const ld::Atom* atom)
+static const ld::Atom* getFollowOnAtom(const ld::Atom* atom)
 {
 	for (ld::Fixup::iterator fit = atom->fixupsBegin(); fit != atom->fixupsEnd(); ++fit) {
 		if ( fit->kind == ld::Fixup::kindNoneFollowOn ) {
-			switch (fit->binding) {
-				case ld::Fixup::bindingDirectlyBound:
-					return fit->u.target;
-				case ld::Fixup::bindingsIndirectlyBound:
-					// <rdar://96314882> Handle indirectly bound symbol aliases
-					return state.indirectBindingTable[fit->u.bindingIndex];
-				default:
-					throwf("Unexpected binding kind in objc atom: %s", atom->name());
-			}
+			assert(fit->binding == ld::Fixup::bindingDirectlyBound);
+			return fit->u.target;
 		}
 	}
 	return nullptr;
 }
 
-static const ld::Atom* fixClassAliases(const ld::Internal& state, const ld::Atom* classAtom, uint64_t& addend)
+static const ld::Atom* fixClassAliases(const ld::Atom* classAtom, uint64_t& addend)
 {
 	if ( (addend != 0) && (classAtom->size() == addend) ) {
 		// have pointer to swift class prefix on objc class
-		const ld::Atom* nextAtom = getFollowOnAtom(state, classAtom);
+		const ld::Atom* nextAtom = getFollowOnAtom(classAtom);
 		assert(nextAtom != nullptr);
 		addend = 0;
 		return nextAtom;
@@ -1268,7 +1263,7 @@ static const ld::Atom* fixClassAliases(const ld::Internal& state, const ld::Atom
 		return classAtom;
 
 	// get real atom (not alias)
-	const ld::Atom* nextAtom = getFollowOnAtom(state, classAtom);
+	const ld::Atom* nextAtom = getFollowOnAtom(classAtom);
 	assert(nextAtom != nullptr);
 	return nextAtom;
 }
@@ -1316,17 +1311,14 @@ struct AtomSorter
 	}
 };
 
-struct AtomByContentSorter
+#if 0
+static bool compSelRefs(const ld::Atom* l, const ld::Atom* r)
 {
-
-	bool operator()(const ld::Atom* left, const ld::Atom* right)
-	{
-		std::string_view lContent((char*)left->rawContentPointer(), left->size());
-		std::string_view rContent((char*)right->rawContentPointer(), right->size());
-
-		return (lContent < rContent);
-	}
+	const char* leftSelName  = (char*)l->name();
+	const char* rightSelName = (char*)r->name();
+	return (strcmp(leftSelName, rightSelName) <= 0 );
 };
+#endif
 
 template <typename A>
 static void optimizeCategories(const std::vector<const ld::Atom*>& categories,
@@ -1424,379 +1416,6 @@ static void optimizeCategories(const std::vector<const ld::Atom*>& categories,
 	}
 }
 
-// Walk all fixups which point to the eligible classes/aliases.  Classes/aliases are only
-// eligible for patching is all fixups are pointers, not code such as adrp/add.
-static void removeIneligiblePatching(ld::Internal& state,
-									std::unordered_set<const ld::Atom*>& eligibleObjects,
-									bool warnOnNonInterposing)
-{
-	for (ld::Internal::FinalSection* sect : state.sections) {
-		for (const ld::Atom* atom : sect->atoms) {
-			const ld::Atom* target = NULL;
-			const ld::Atom* minusTarget = NULL;
-			ld::Fixup*		fixupWithStore = NULL;
-
-			for (ld::Fixup::iterator fit = atom->fixupsBegin(), end = atom->fixupsEnd(); fit != end; ++fit) {
-				if ( fit->firstInCluster() ) {
-					target = NULL;
-					minusTarget = NULL;
-					fixupWithStore = NULL;
-				}
-
-				if ( fit->setsTarget(false) ) {
-					switch ( fit->binding ) {
-						case ld::Fixup::bindingNone:
-						case ld::Fixup::bindingByNameUnbound:
-							break;
-						case ld::Fixup::bindingByContentBound:
-						case ld::Fixup::bindingDirectlyBound:
-							target = fit->u.target;
-							break;
-						case ld::Fixup::bindingsIndirectlyBound:
-							target = state.indirectBindingTable[fit->u.bindingIndex];
-							break;
-					}
-					assert(target != NULL);
-				}
-
-				if ( fit->kind == ld::Fixup::kindSubtractTargetAddress ) {
-					switch ( fit->binding ) {
-						case ld::Fixup::bindingNone:
-						case ld::Fixup::bindingByNameUnbound:
-							break;
-						case ld::Fixup::bindingByContentBound:
-						case ld::Fixup::bindingDirectlyBound:
-							minusTarget = fit->u.target;
-							break;
-						case ld::Fixup::bindingsIndirectlyBound:
-							minusTarget = state.indirectBindingTable[fit->u.bindingIndex];
-							break;
-					}
-					assert(minusTarget != NULL);
-				}
-
-				if ( fit->isStore() )
-					fixupWithStore = fit;
-
-				if ( fit->lastInCluster() ) {
-					if ( (minusTarget != NULL) && eligibleObjects.count(minusTarget) ) {
-						// ... - &CLASS_$_Foo.  We can't support this
-						eligibleObjects.erase(minusTarget);
-						warning("'%s' is ineligible for dyld patching due to subtract fixup in '%s' from '%s'",
-								minusTarget->name(), atom->name(), atom->safeFilePath());
-					} else if ( (target != NULL) && eligibleObjects.count(target) ) {
-						if ( fixupWithStore != NULL ) {
-							bool supportedFixup = false;
-							switch ( fixupWithStore->kind ) {
-								case ld::Fixup::kindStoreTargetAddressLittleEndian32:
-								case ld::Fixup::kindStoreTargetAddressLittleEndian64:
-#if SUPPORT_ARCH_arm64e
-								case ld::Fixup::kindStoreTargetAddressLittleEndianAuth64:
-#endif
-									supportedFixup = true;
-									break;
-								default:
-									break;
-							}
-
-							if ( !supportedFixup ) {
-								// Probably a reference to a class symbol in code, eg, adrp/add
-								eligibleObjects.erase(target);
-								if ( warnOnNonInterposing ) {
-									warning("'%s' is ineligible for dyld patching due to "
-											"non-interposable reference in '%s' from '%s'",
-											target->name(), atom->name(), atom->safeFilePath());
-								}
-							}
-						} else {
-							// No fixup with store.  Be conservative and assume we can't handle this
-							eligibleObjects.erase(target);
-						}
-					}
-				}
-			}
-		}
-	}
-}
-
-// dyld supports a more efficient method of patching objc classes in the shared cache.
-// Instead of patching every use of a class such as CFString, dyld can patch the body of the shared cache CFString
-// to point to the body of the on-disk CFString.
-//
-// Pointer equality is also requried.  There should only be a single definition of a given class.  As all shared cache
-// pointers will be to the shared cache version of the class, references to the on-disk definition should be rewritten to
-// point to the shared cache one.  In dyld this will be done with implicitly interposing the binds to the on-disk class,
-// and means that we need rebases to be replaced with binds to self.
-// A bind to self wll only succeed if the class is exported.  In the case of some CF constant classes, the class symbol
-// is hidden, but there is an exported alias of the class.  We rewrite references from the hidden class to the exported
-// alias to support this case.
-// Finally, for a given class, and any aliases, the class can only be interposed if all references to the class/aliases are
-// via pointers.  We can't patch direct references in code such as adrp/add in arm64
-template <typename A>
-void optimizeClassPatching(const Options& opts, ld::Internal& state, const std::set<const ld::Atom*>& classDefAtoms)
-{
-	// To support more efficient objc patching in the shared cache, objc classes should be -interposable
-	if ( classDefAtoms.empty() )
-		return;
-
-	// Interposing will change the __objc_classlist entries to binds to self.  dyld only knows how to handle
-	// that with chained fixups
-	if ( !opts.sharedRegionEligible() || !opts.makeChainedFixups() )
-		return;
-
-	// Don't do this on old platforms
-	if ( !opts.platforms().minOS(ld::version2022Fall) )
-		return;
-
-	// Work out which classes can be interposed.  All references to the classes must be via pointers
-	std::unordered_set<const ld::Atom*> eligibleClasses;
-	eligibleClasses.reserve(classDefAtoms.size() * 2);
-	for (const ld::Atom* classAtom : classDefAtoms) {
-		eligibleClasses.insert(classAtom);
-		eligibleClasses.insert(Class<A>::getMetaClass(state, classAtom));
-	}
-
-	// Map from unexported class, to an alias which is exported
-	std::unordered_map<const ld::Atom*, const ld::Atom*> classToExportedAlias;
-	// Map from alias to class
-	std::unordered_map<const ld::Atom*, const ld::Atom*> aliasToClass;
-	for (ld::Internal::FinalSection* sect : state.sections) {
-	   for (const ld::Atom* atom : sect->atoms) {
-		   if ( !atom->isAlias() )
-			   continue;
-		   if ( const ld::Atom* aliasOf = getFollowOnAtom(state, atom) ) {
-			   // Only track aliases of classes
-			   // FIXME: Do we need to handle aliases of aliases?
-			   if ( !eligibleClasses.count(aliasOf) )
-				   continue;
-
-			   eligibleClasses.insert(atom);
-
-			   // Some classes are hidden, but an alias is exported.  Note down that exported
-			   // alias if there is one.
-			   if ( (atom->scope() == Atom::scopeGlobal) && (aliasOf->scope() != Atom::scopeGlobal) ) {
-				   classToExportedAlias.insert({ aliasOf, atom });
-			   }
-
-			   aliasToClass[atom] = aliasOf;
-		   }
-	   }
-	}
-
-	// Walk all fixups which point to the eligible classes/aliases.  Classes/aliases are only
-	// eligible for patching is all fixups are pointers, not code such as adrp/add.
-	removeIneligiblePatching(state, eligibleClasses, false);
-
-	// If none of the classes are eliglble, then nothing left to do
-	if ( eligibleClasses.empty() )
-		return;
-
-	// Remove the class if any aliases had ineligible fixups
-	for (auto& aliasAndClass : aliasToClass) {
-		const ld::Atom* aliasAtom = aliasAndClass.first;
-		const ld::Atom* classAtom = aliasAndClass.second;
-		if ( !eligibleClasses.count(aliasAtom) || !eligibleClasses.count(classAtom) ) {
-			eligibleClasses.erase(classAtom);
-			classToExportedAlias.erase(classAtom);
-		}
-	}
-
-	// At runtime, the class/metaclass pair are either both patched, or neither are.
-	for (const ld::Atom* classAtom : classDefAtoms) {
-		const ld::Atom* metaclassAtom = Class<A>::getMetaClass(state, classAtom);
-		if ( !eligibleClasses.count(classAtom) )
-			eligibleClasses.erase(metaclassAtom);
-		else if ( !eligibleClasses.count(metaclassAtom) )
-			eligibleClasses.erase(classAtom);
-	}
-
-	// If none of the classes are eliglble, then nothing left to do.  We do this check
-	// again in case the above loops removed the last eligible classes
-	if ( eligibleClasses.empty() )
-		return;
-
-	// Mark any remaining exported eligible classes/aliases as -interposable
-	for (const ld::Atom* classAtom : eligibleClasses) {
-		if ( classAtom->scope() == Atom::scopeGlobal )
-			opts.addInterpose(classAtom->name());
-	}
-
-	// If we have unexported classes, rewrite references to aliases which are exported
-	if ( !classToExportedAlias.empty() ) {
-		for (ld::Internal::FinalSection* sect : state.sections) {
-			for (const ld::Atom* atom : sect->atoms) {
-				for (ld::Fixup::iterator fit = atom->fixupsBegin(), end = atom->fixupsEnd(); fit != end; ++fit) {
-					const ld::Atom* fixupTarget = NULL;
-					switch ( fit->binding ) {
-						case ld::Fixup::bindingsIndirectlyBound:
-							fixupTarget = state.indirectBindingTable[fit->u.bindingIndex];
-							break;
-						case ld::Fixup::bindingDirectlyBound:
-							fixupTarget = fit->u.target;
-							break;
-						default:
-							break;
-					}
-
-					if ( fixupTarget == nullptr )
-						continue;
-
-					auto it = classToExportedAlias.find(fixupTarget);
-					if ( (it != classToExportedAlias.end()) && (atom != it->second) ) {
-						fit->binding	= ld::Fixup::bindingDirectlyBound;
-						fit->u.target 	= it->second;
-					}
-				}
-			}
-		}
-	}
-}
-
-// Returns true if this is a CF singleton object.  For now the only eligible
-// one of these looks like: struct { void* isa; uintp64_t other }
-static bool isCFSingleton(const ld::Atom* atom, uint32_t pointerSize,
-						  bool usesAuthPtrs)
-{
-	if ( atom->size() != (2 * pointerSize) ) {
-		warning("'%s' is unsupported size for dyld patching", atom->name());
-		return false;
-	}
-
-	// The first field needs to look like an ISA.  In arm64e that also means it needs
-	// to be signed with pointer authentication
-	bool sawSignedISA = false;
-	for (ld::Fixup::iterator fit = atom->fixupsBegin(); fit != atom->fixupsEnd(); ++fit) {
-		if ( fit->offsetInAtom != 0 ) {
-			warning("'%s' is unsupported fixup location for dyld patching", atom->name());
-			return false;
-		}
-
-#if SUPPORT_ARCH_arm64e
-		if ( usesAuthPtrs ) {
-			if ( fit->kind == Fixup::kindSetAuthData ) {
-				// Make sure this is signed to match ISAs
-				if ( fit->u.authData.discriminator != 0x6AE1 ) {
-					warning("'%s' has unsupported ISA fixup for dyld patching", atom->name());
-					return false;
-				}
-				if ( !fit->u.authData.hasAddressDiversity ) {
-					warning("'%s' has unsupported ISA fixup for dyld patching", atom->name());
-					return false;
-				}
-				if ( fit->u.authData.key != Fixup::AuthData::ptrauth_key_asda ) {
-					warning("'%s' has unsupported ISA fixup for dyld patching", atom->name());
-					return false;
-				}
-				sawSignedISA = true;
-				continue;
-			}
-
-			if ( fit->kind != Fixup::kindStoreTargetAddressLittleEndianAuth64 ) {
-				warning("'%s' has unsupported ISA fixup for dyld patching", atom->name());
-				return false;
-			}
-			continue;
-		}
-#endif
-		if ( (pointerSize == 4) && (fit->kind != Fixup::kindStoreTargetAddressLittleEndian32) ) {
-			warning("'%s' has unsupported ISA fixup for dyld patching", atom->name());
-			return false;
-		}
-		if ( (pointerSize == 8) && (fit->kind != Fixup::kindStoreTargetAddressLittleEndian64) ) {
-			warning("'%s' has unsupported ISA fixup for dyld patching", atom->name());
-			return false;
-		}
-	}
-
-	if ( usesAuthPtrs && !sawSignedISA ) {
-		warning("'%s' has unsupported ISA fixup for dyld patching", atom->name());
-		return false;
-	}
-
-	return true;
-}
-
-// CF constant classes such as @{}, @[], @(YES), @(NO) don't allocate memory.  Intead, CF exports
-// singleton objects everyone can reference.  CF roots are expensive as all of these uses are patched.
-// This pass works out when its possible to instead patch the singleton itself, not the uses of it
-template <typename A>
-void optimizeSingletonPatching(const Options& opts, ld::Internal& state)
-{
-	const uint32_t pointerSize = (opts.architecture() & CPU_ARCH_ABI64) ? 8 : 4;
-#if SUPPORT_ARCH_arm64e
-	const bool usesAuthPtrs = opts.supportsAuthenticatedPointers();
-#else
-	const bool usesAuthPtrs = false;
-#endif
-
-	if ( !opts.sharedRegionEligible() )
-		return;
-
-	// Don't do this on old platforms
-	if ( !opts.platforms().minOS(ld::version2022Fall) )
-		return;
-
-	// Find anything in the singleton sections
-	std::vector<const ld::Atom*> singletonAtoms;
-	ld::Internal::FinalSection* section = nullptr;
-	for (ld::Internal::FinalSection* sect : state.sections) {
-		if (strncmp(sect->sectionName(), "__const_cfobj2", 16) != 0)
-			continue;
-		section = sect;
-		for (const ld::Atom* atom : sect->atoms) {
-			if ( isCFSingleton(atom, pointerSize, usesAuthPtrs) )
-				singletonAtoms.push_back(atom);
-		}
-		break;
-	}
-
-	if ( singletonAtoms.empty() )
-		return;
-
-	// Make sure all reference are interposable
-	std::unordered_set<const ld::Atom*> eligibleObjects;
-	eligibleObjects.insert(singletonAtoms.begin(), singletonAtoms.end());
-	removeIneligiblePatching(state, eligibleObjects, true);
-
-	// dyld uses the reserved2 field to know if the section is valid.
-	// This means all atoms in the section need to be interposable, or none can
-	// be, as dyld can't distinguish good from bad
-	if ( singletonAtoms.size() != eligibleObjects.size() )
-		return;
-
-	// Mark any remaining exported objects as -interposable
-	for (const ld::Atom* atom : singletonAtoms) {
-		if ( atom->scope() == Atom::scopeGlobal )
-			opts.addInterpose(atom->name());
-	}
-
-	// HACK: This field ends up being reserved2
-	section->indirectSymTabElementSize = 2 * pointerSize;
-}
-
-static const std::string_view selectorRefName(const ld::Atom* selRefAtom, const ld::Internal& state)
-{
-	ld::Fixup::iterator fit = selRefAtom->fixupsBegin();
-	const ld::Atom* targetAtom = nullptr;
-	switch ( fit->binding ) {
-		case ld::Fixup::bindingByContentBound:
-			targetAtom = fit->u.target;
-			break;
-		case ld::Fixup::bindingsIndirectlyBound:
-            targetAtom = state.indirectBindingTable[fit->u.bindingIndex];
-			break;
-		case ld::Fixup::bindingDirectlyBound:
-			targetAtom = fit->u.target;
-			break;
-		default:
-			assert(0 && "unsupported reference to selector");
-	}
-	assert(targetAtom != nullptr);
-	assert(targetAtom->contentType() == ld::Atom::typeCString);
-	return std::string_view((char*)targetAtom->rawContentPointer(), targetAtom->size());
-}
-
-
 template <typename A>
 void OptimizeCategories<A>::doit(const Options& opts, ld::Internal& state, bool haveCategoriesWithoutClassPropertyStorage)
 {
@@ -1824,13 +1443,13 @@ void OptimizeCategories<A>::doit(const Options& opts, ld::Internal& state, bool 
 				for (ld::Fixup::iterator fit = catListAtom->fixupsBegin(); fit != catListAtom->fixupsEnd(); ++fit) {
 					if ( (fit->offsetInAtom == 0) && (fit->kind == ld::Fixup::kindAddAddend) && (fit->u.addend == sizeof(pint_t)) ) {
 						// catlist points to end of category atom, could be pointing to end of swift prefix, so get next atom which is objc stuff
-						const ld::Atom* betterCatAtom = getFollowOnAtom(state, categoryAtom);
+						const ld::Atom* betterCatAtom = getFollowOnAtom(categoryAtom);
 						assert(categoryAtom != nullptr);
 						categoryAtom = betterCatAtom;
 					}
 				}
 				uint64_t onClassAddend;
-				const ld::Atom* onClassAtom = fixClassAliases(state, Category<A>::getClass(state, categoryAtom, onClassAddend), onClassAddend);
+				const ld::Atom* onClassAtom = fixClassAliases(Category<A>::getClass(state, categoryAtom, onClassAddend), onClassAddend);
 				categoryToClassAtoms[categoryAtom] = onClassAtom;
 				if ( isNonLazyCategory ) {
 					categoryToNlListElement[categoryAtom] = catListAtom;
@@ -1869,7 +1488,7 @@ void OptimizeCategories<A>::doit(const Options& opts, ld::Internal& state, bool 
 				uint64_t classAtomAddend;
 				const ld::Atom* classAtom = ObjCData<A>::getPointerInContent(state, classListAtom, 0, &classAtomAddend, nullptr);
 				// if class atom has an alias, switch to real class atom
-				classAtom = fixClassAliases(state, classAtom, classAtomAddend);
+				classAtom = fixClassAliases(classAtom, classAtomAddend);
 				classDefAtoms.insert(classAtom);
 				if ( isNonLazyClass ) {
 					nlClassDefAtoms.insert(classAtom);
@@ -2112,54 +1731,16 @@ void OptimizeCategories<A>::doit(const Options& opts, ld::Internal& state, bool 
 	for (ld::Internal::FinalSection* sect : state.sections ) {
 		sect->atoms.erase(std::remove_if(sect->atoms.begin(), sect->atoms.end(), OptimizedAway(deadAtoms)), sect->atoms.end());
 	}
-
+#if 0
 	// sort __selrefs section
-	for (ld::Internal::FinalSection* sect : state.sections ) {
-		switch ( sect->type() ) {
-			case ld::Section::typeCStringPointer:
-				if ( strcmp(sect->sectionName(), "__objc_selrefs") == 0 ) {
-					std::sort(sect->atoms.begin(), sect->atoms.end(), [&state](const ld::Atom* lhs, const ld::Atom* rhs) {
-						return (selectorRefName(lhs, state) < selectorRefName(rhs, state));
-					});
-				}
-				break;
-			case ld::Section::typeNonStdCString:
-				if ( strcmp(sect->sectionName(), "__objc_methname") == 0 ) {
-					auto& atoms = sect->atoms;
-					// Sort selector strings alphabetically for deterministic output.
-					std::sort(atoms.begin(), atoms.end(), AtomByContentSorter{});
-
-					// Now divide the atoms into two groups, one where the length of the
-					// selectors is a power-of-2. Then intertwine the groups together
-					// to reduce the number of adjacent selectors with a power-of-2 length.
-					// This is to potentially reduce number of hash collisions in ObjC method
-					// cache, where hashes are the lower bits of selector strings.
-					const auto notPowerOf2Start = std::stable_partition(atoms.begin(), atoms.end(), [](const ld::Atom* atom) {
-						uint64_t atomSize = atom->size();
-						uint64_t isPowerOf2 = ((atomSize-1) & atomSize) == 0;
-						return isPowerOf2;
-					});
-
-					auto powerOf2It = atoms.begin() + 1;
-					auto notPowerOf2It = notPowerOf2Start + 1;
-
-					while ( powerOf2It < notPowerOf2Start && notPowerOf2It < atoms.end() ) {
-						std::swap(*notPowerOf2It, *powerOf2It);
-						// Increment iterators by two, so the adjacent elements don't have
-						// a power-of-2 size.
-						powerOf2It += 2;
-						notPowerOf2It += 2;
-					}
-				}
-				break;
-			default:
-				break;
+	if ( methodListFormat == MethodListAtom<A>::threeDeltas ) {
+		for (ld::Internal::FinalSection* sect : state.sections ) {
+			if ( (sect->type() == ld::Section::typeCStringPointer) && (strcmp(sect->sectionName(), "__objc_selrefs") == 0) ) {
+				std::sort(sect->atoms.begin(), sect->atoms.end(), compSelRefs);
+			}
 		}
 	}
-
-	optimizeClassPatching<A>(opts, state, classDefAtoms);
-
-	optimizeSingletonPatching<A>(opts, state);
+#endif
 }
 
 
@@ -2765,11 +2346,6 @@ void doPass(const Options& opts, ld::Internal& state)
 #if SUPPORT_ARCH_arm64_32
 		case CPU_TYPE_ARM64_32:
 			doPass<arm64_32, true>(opts, state);
-			break;
-#endif
-#if SUPPORT_ARCH_riscv32
-		case CPU_TYPE_RISCV32:
-			doPass<riscv32, true>(opts, state);
 			break;
 #endif
 		default:

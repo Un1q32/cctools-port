@@ -96,41 +96,6 @@ private:
 #endif
 
 
-#if SUPPORT_ARCH_riscv32
-class RiscV32BranchIslandAtom : public ld::Atom {
-public:
-											RiscV32BranchIslandAtom(const char* nm, const ld::Atom* target, TargetAndOffset finalTarget)
-				: ld::Atom(_s_text_section, ld::Atom::definitionRegular, ld::Atom::combineNever,
-							ld::Atom::scopeLinkageUnit, ld::Atom::typeBranchIsland,
-							ld::Atom::symbolTableIn, false, false, false, ld::Atom::Alignment(2)),
-				_name(nm),
-				_fixup1(0, ld::Fixup::k1of3, ld::Fixup::kindSetTargetAddress, target),
-				_fixup2(0, ld::Fixup::k2of3, ld::Fixup::kindStoreRISCVBranch20),
-				_fixup3(0, ld::Fixup::k3of3, ld::Fixup::kindIslandTarget, finalTarget.atom) {
-					if (_s_log) fprintf(stderr, "%p: riscv branch island to final target %s\n",
-										this, finalTarget.atom->name());
-				}
-
-	virtual const ld::File*					file() const					{ return NULL; }
-	virtual const char*						name() const					{ return _name; }
-	virtual uint64_t						size() const					{ return 4; }
-	virtual uint64_t						objectAddress() const			{ return 0; }
-	virtual void							copyRawContent(uint8_t buffer[]) const {
-		OSWriteLittleInt32(buffer, 0, 0x0000006F);
-	}
-	virtual void							setScope(Scope)					{ }
-	virtual ld::Fixup::iterator				fixupsBegin() const				{ return (ld::Fixup*)&_fixup1; }
-	virtual ld::Fixup::iterator				fixupsEnd()	const 				{ return &((ld::Fixup*)&_fixup2)[3]; }
-
-private:
-	const char*								_name;
-	ld::Fixup								_fixup1;
-	ld::Fixup								_fixup2;
-	ld::Fixup								_fixup3;
-};
-#endif
-
-
 class ARMtoARMBranchIslandAtom : public ld::Atom {
 public:
 											ARMtoARMBranchIslandAtom(const char* nm, const ld::Atom* target, TargetAndOffset finalTarget)
@@ -331,11 +296,11 @@ static ld::Atom* makeBranchIsland(const Options& opts, ld::Fixup::Kind kind, int
 		case ld::Fixup::kindStoreThumbBranch22:
 		case ld::Fixup::kindStoreTargetAddressARMBranch24:
 		case ld::Fixup::kindStoreTargetAddressThumbBranch22:
-			if ( crossSectionBranch && opts.archSupportsThumb2() ) {
+			if ( crossSectionBranch && opts.preferSubArchitecture() && opts.archSupportsThumb2() ) {
 				return new Thumb2toThumbBranchAbsoluteIslandAtom(name, inSect, finalTarget);
 			}
 			else if ( finalTarget.atom->isThumb() ) {
-				if ( opts.archSupportsThumb2() ) {
+				if ( opts.preferSubArchitecture() && opts.archSupportsThumb2() ) {
 					return new Thumb2toThumbBranchIslandAtom(name, nextTarget, finalTarget);
 				}
 				else if ( opts.outputSlidable() ) {
@@ -355,11 +320,6 @@ static ld::Atom* makeBranchIsland(const Options& opts, ld::Fixup::Kind kind, int
 			return new ARM64BranchIslandAtom(name, nextTarget, finalTarget);
 			break;
 #endif
-#if SUPPORT_ARCH_riscv32
-		case ld::Fixup::kindStoreRISCVBranch20:
-			return new RiscV32BranchIslandAtom(name, nextTarget, finalTarget);
-			break;
-#endif
 		default:
 			assert(0 && "unexpected branch kind");
 			break;
@@ -374,7 +334,7 @@ static uint64_t textSizeWhenMightNeedBranchIslands(const Options& opts, bool see
 		case CPU_TYPE_ARM:
 			if ( ! seenThumbBranch )
 				return 32000000;  // ARM can branch +/- 32MB
-			else if ( opts.archSupportsThumb2() )
+			else if ( opts.preferSubArchitecture() && opts.archSupportsThumb2() ) 
 				return 16000000;  // thumb2 can branch +/- 16MB
 			else
 				return  4000000;  // thumb1 can branch +/- 4MB
@@ -389,11 +349,6 @@ static uint64_t textSizeWhenMightNeedBranchIslands(const Options& opts, bool see
 			return 128000000; // arm64_32 can branch +/- 128MB
 			break;
 #endif
-#if SUPPORT_ARCH_riscv32
-		case CPU_TYPE_RISCV32:
-			return 1000000; // risvc can branch +/- 1MB
-			break;
-#endif
 	}
 	assert(0 && "unexpected architecture");
 	return 0x100000000LL;
@@ -406,7 +361,7 @@ static uint64_t maxDistanceBetweenIslands(const Options& opts, bool seenThumbBra
 		case CPU_TYPE_ARM:
 			if ( ! seenThumbBranch )
 				return 30*1024*1024;	// 2MB of branch islands per 32MB
-			else if ( opts.archSupportsThumb2() )
+			else if ( opts.preferSubArchitecture() && opts.archSupportsThumb2() ) 
 				return 14*1024*1024;	// 2MB of branch islands per 16MB
 			else
 				return 3500000;			// 0.5MB of branch islands per 4MB
@@ -419,11 +374,6 @@ static uint64_t maxDistanceBetweenIslands(const Options& opts, bool seenThumbBra
 #if SUPPORT_ARCH_arm64_32
 		case CPU_TYPE_ARM64_32:
 			return 124*1024*1024;		 // 4MB of branch islands per 128MB
-			break;
-#endif
-#if SUPPORT_ARCH_riscv32
-		case CPU_TYPE_RISCV32:
-			return 0xf0000;				// 64KB of branch islands per 1MB
 			break;
 #endif
 	}
@@ -456,7 +406,7 @@ static uint64_t maxDistanceBetweenIslands(const Options& opts, bool seenThumbBra
 //
 
 
-static void makeIslandsForSection(const Options& opts, ld::Internal& state, ld::Internal::FinalSection* textSection, size_t stubsSize)
+static void makeIslandsForSection(const Options& opts, ld::Internal& state, ld::Internal::FinalSection* textSection, unsigned stubCount)
 {
 	// assign section offsets to each atom in __text section, watch for thumb branches, and find total size
 	bool hasThumbBranches = false;
@@ -489,22 +439,14 @@ static void makeIslandsForSection(const Options& opts, ld::Internal& state, ld::
 				case ld::Fixup::kindStoreTargetAddressThumbBranch22:
 					hasThumbBranches = true;
 					// fall into arm branch case
-					[[clang::fallthrough]];
 				case ld::Fixup::kindStoreARMBranch24:
 				case ld::Fixup::kindStoreTargetAddressARMBranch24:
 					haveBranch = true;
 					break;
-#if SUPPORT_ARCH_riscv32
-				case ld::Fixup::kindStoreRISCVBranch20:
-					haveBranch = true;
-					break;
-#endif
                 default:
                     break;   
 			}
-			// ignore LTO proxies that weren't built, they'll be diagnosed when writing the output file
-			if ( haveBranch && (target->section().type() != ld::Section::typeStub) && (target->section().type() != ld::Section::typeStubObjC)
-					&& (target->contentType() != ld::Atom::typeLTOtemporary) ) {
+			if ( haveBranch && (target->contentType() != ld::Atom::typeStub) ) {
 				// <rdar://problem/14792124> haveCrossSectionBranches only applies to -preload builds
 				if ( preload && (sAtomToSectionIndex[atom] != sAtomToSectionIndex[target]) )
 					haveCrossSectionBranches = true;
@@ -523,7 +465,7 @@ static void makeIslandsForSection(const Options& opts, ld::Internal& state, ld::
 		(const_cast<ld::Atom*>(atom))->setSectionOffset(offset);
 		offset += atom->size();
 	}
-	uint64_t totalTextSize = offset + stubsSize;
+	uint64_t totalTextSize = offset + stubCount*16;
 	if ( (totalTextSize < textSizeWhenMightNeedBranchIslands(opts, hasThumbBranches)) && !haveCrossSectionBranches )
 		return;
 	if (_s_log) fprintf(stderr, "ld: section %s size=%llu, might need branch islands\n", textSection->sectionName(), totalTextSize);
@@ -567,7 +509,7 @@ static void makeIslandsForSection(const Options& opts, ld::Internal& state, ld::
 	for(int i=0; i < kIslandRegionsCount; ++i) {
 		regionsMap[i] = new AtomToIsland();
 		regionsIslands[i] = new std::vector<const ld::Atom*>();
-		regionAddresses[i] = branchIslandInsertionPoints[i]->sectionOffset() + branchIslandInsertionPoints[i]->size() + textSection->address;
+		regionAddresses[i] = branchIslandInsertionPoints[i]->sectionOffset() + branchIslandInsertionPoints[i]->size();
 		if (_s_log) fprintf(stderr, "ld: branch islands will be inserted at 0x%08llX after %s\n", regionAddresses[i], branchIslandInsertionPoints[i]->name());
 	}
 	unsigned int islandCount = 0;
@@ -613,18 +555,9 @@ static void makeIslandsForSection(const Options& opts, ld::Internal& state, ld::
 #endif
 					haveBranch = true;
 					break;
-#if SUPPORT_ARCH_riscv32
-				case ld::Fixup::kindStoreRISCVBranch20:
-					haveBranch = true;
-					break;
-#endif
                 default:
                     break;   
 			}
-			// ignore LTO proxies that weren't built, they'll be diagnosed when writing the output file
-			if ( haveBranch && target && target->contentType() == Atom::ContentType::typeLTOtemporary )
-				haveBranch = false;
-
 			if ( haveBranch ) {
 				bool crossSectionBranch = ( preload && (sAtomToSectionIndex[atom] != sAtomToSectionIndex[target]) );
 				int64_t srcAddr = atom->sectionOffset() + fit->offsetInAtom;
@@ -633,7 +566,7 @@ static void makeIslandsForSection(const Options& opts, ld::Internal& state, ld::
 					srcAddr = sAtomToAddress[atom] + fit->offsetInAtom;
 					dstAddr = sAtomToAddress[target] + addend;
 				}
-				if ( (target->section().type() == ld::Section::typeStub) || (target->section().type() == ld::Section::typeStubObjC) )
+				if ( target->section().type() == ld::Section::typeStub )
 					dstAddr = totalTextSize;
 				int64_t displacement = dstAddr - srcAddr;
 				TargetAndOffset finalTargetAndOffset = { target, (uint32_t)addend };
@@ -649,6 +582,7 @@ static void makeIslandsForSection(const Options& opts, ld::Internal& state, ld::
 												island, island->name(), displacement);
 						++islandCount;
 						regionsIslands[0]->push_back(island);
+						state.atomToSection[island] = textSection;
 					}
 					else {
 						island = pos->second;
@@ -672,6 +606,7 @@ static void makeIslandsForSection(const Options& opts, ld::Internal& state, ld::
 								(*region)[finalTargetAndOffset] = island;
 								if (_s_log) fprintf(stderr, "added forward branching island %p %s to region %d for %s\n", island, island->name(), i, atom->name());
 								regionsIslands[i]->push_back(island);
+								state.atomToSection[island] = textSection;
 								++islandCount;
 								nextTarget = island;
 							}
@@ -698,6 +633,7 @@ static void makeIslandsForSection(const Options& opts, ld::Internal& state, ld::
 								(*region)[finalTargetAndOffset] = island;
 								if (_s_log) fprintf(stderr, "added back branching island %p %s to region %d for %s\n", island, island->name(), i, atom->name());
 								regionsIslands[i]->push_back(island);
+								state.atomToSection[island] = textSection;
 								++islandCount;
 								prevTarget = island;
 							}
@@ -801,9 +737,6 @@ void doPass(const Options& opts, ld::Internal& state)
 #if SUPPORT_ARCH_arm64_32
 		case CPU_TYPE_ARM64_32:
 #endif
-#if SUPPORT_ARCH_riscv32
-		case CPU_TYPE_RISCV32:
-#endif
 			break;
 		default:
 			return;
@@ -814,18 +747,18 @@ void doPass(const Options& opts, ld::Internal& state)
 	}
 	
 	// scan sections for number of stubs
-	size_t stubsSize = 0;
-	for (const ld::Internal::FinalSection* sect : state.sections) {
+	unsigned stubCount = 0;
+	for (std::vector<ld::Internal::FinalSection*>::iterator sit=state.sections.begin(); sit != state.sections.end(); ++sit) {
+		ld::Internal::FinalSection* sect = *sit;
 		if ( sect->type() == ld::Section::typeStub )
-			stubsSize += sect->atoms.size() * 16;
-		else if ( sect->type() == ld::Section::typeStubObjC )
-			stubsSize += sect->atoms.size() * 32;
+			stubCount = sect->atoms.size();
 	}
 
 	// scan sections and add island to each code section
-	for (ld::Internal::FinalSection* sect : state.sections) {
-		if ( sect->type() == ld::Section::typeCode )
-			makeIslandsForSection(opts, state, sect, stubsSize);
+	for (std::vector<ld::Internal::FinalSection*>::iterator sit=state.sections.begin(); sit != state.sections.end(); ++sit) {
+		ld::Internal::FinalSection* sect = *sit;
+		if ( sect->type() == ld::Section::typeCode ) 
+			makeIslandsForSection(opts, state, sect, stubCount);
 	}
 }
 

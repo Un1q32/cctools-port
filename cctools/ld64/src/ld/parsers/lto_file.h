@@ -45,8 +45,6 @@ extern bool isObjectFile(const uint8_t* fileContent, uint64_t fileLength, cpu_ty
 
 extern bool hasObjCCategory(const uint8_t* fileContent, uint64_t fileLength);
 
-extern std::vector<std::string> softloadRuntimeSymbols(cpu_type_t arch);
-
 extern ld::relocatable::File* parse(const uint8_t* fileContent, uint64_t fileLength,
 									const char* path, time_t modTime, ld::File::Ordinal ordinal,
 									cpu_type_t architecture, cpu_subtype_t subarch, bool logAllFiles,
@@ -77,7 +75,6 @@ struct OptimizeOptions {
 	bool								armUsesZeroCostExceptions;
 	bool								simulator;
 	bool								internalSDK;
-	bool								avoidMisalignedPointers;
 #if SUPPORT_ARCH_arm64e
 	bool								supportsAuthenticatedPointers;
 #endif
@@ -88,12 +85,10 @@ struct OptimizeOptions {
 	ld::VersionSet						platforms;
 	const std::vector<const char*>*		llvmOptions;
 	const std::vector<const char*>*		initialUndefines;
-	bool								keepPrivateExterns;
 };
 
 extern bool	optimize(   const std::vector<const ld::Atom*>&	allAtoms,
 						ld::Internal&						state,
-						const Options&								ldOptions,
 						const OptimizeOptions&				options,
 						ld::File::AtomHandler&				handler,
 						std::vector<const ld::Atom*>&		newAtoms, 
