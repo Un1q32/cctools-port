@@ -6315,6 +6315,10 @@ void Options::reconfigureDefaults()
 	else if ( fAdHocSignForceOff ) {
 		fAdHocSign = false;
 	}
+	else if ( dyldLoadsOutput() && !platforms().contains(ld::Platform::macOS) && platforms().minOS(ld::version2008) ) {
+		// cctools-port: ad-hoc sign all userland non-macOS binaries except iOS 1.x
+		fAdHocSign = true;
+	}
 	else {
 		// <rdar://problem/51911409> ad-hoc sign all userland arm64 macOS binaries
 		// <rdar://problem/66740790> ad-hoc sign all userland arm64 simulator binaries
