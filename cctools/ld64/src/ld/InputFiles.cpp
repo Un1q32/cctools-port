@@ -282,7 +282,8 @@ ld::File* InputFiles::makeFile(const Options::FileInfo& info, bool indirectDylib
 			}
 			// if requested architecture is page aligned within fat file, then remap just that portion of file
 			// ld64-port: remapping the file on Cygwin fails for an unknown reason, so always go the alternative way there
-#ifndef __CYGWIN__
+			// ld64-port: remapping on macOS also fails for some reason, just do the cygwin thing everywhere
+#if 0
 			if ( (fileOffset & 0x00000FFF) == 0 ) {
 				// unmap whole file
 				munmap((caddr_t)p, info.fileLen);
@@ -294,7 +295,7 @@ ld::File* InputFiles::makeFile(const Options::FileInfo& info, bool indirectDylib
 			else {
 #endif /* __CYGWIN__ */
 				p = &p[fileOffset];
-#ifndef __CYGWIN__
+#if 0
 			}
 #endif /* __CYGWIN__ */
 		}
