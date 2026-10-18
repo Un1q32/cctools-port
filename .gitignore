@@ -1,2 +1,67 @@
+# Build outputs
 *.o
 *.lo
+*.la
+*.a
+*.so
+*.so.*
+*.dylib
+.libs/
+.deps/
+.dirstamp
+
+# Autotools / configure generated files
+*~
+aclocal.m4
+autom4te.cache/
+compile
+config.guess
+config.log
+config.status
+config.sub
+configure
+depcomp
+install-sh
+ltmain.sh
+libtool
+missing
+INSTALL
+Makefile
+Makefile.in
+libtool.m4
+lt*.m4
+
+# Copied from the LLVM installation by configure
+cctools/include/llvm-c/lto.h
+
+# Built programs
+cctools/ar/ar
+cctools/as/as
+cctools/as/*/*-as
+cctools/ld/ld
+cctools/ld64/src/ld/ld
+cctools/ld64/src/other/ObjectDump
+cctools/ld64/src/other/dyldinfo
+cctools/ld64/src/other/unwinddump
+cctools/ld64/src/other/machocheck
+cctools/misc/checksyms
+cctools/misc/codesign_allocate
+cctools/misc/indr
+cctools/misc/install_name_tool
+cctools/misc/lipo
+cctools/misc/nm
+cctools/misc/nmedit
+cctools/misc/pagestuff
+cctools/misc/ranlib
+cctools/misc/redo_prebinding
+cctools/misc/seg_addr_table
+cctools/misc/segedit
+cctools/misc/seg_hack
+cctools/misc/size
+cctools/misc/strings
+cctools/misc/strip
+cctools/otool/otool
+
+# Usage examples
+usage_examples/ios_toolchain/tmp
+usage_examples/ios_toolchain/target
