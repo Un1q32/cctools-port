@@ -207,11 +207,13 @@ AC_PROG_CC([clang])
 AC_PROG_CXX([clang++])
 
 # Newer autoconf appends the newest C standard it detects (e.g. -std=gnu23)
-# to CC. cctools still contains K&R-style function definitions which were
-# removed from C23, so fall back to a standard that still accepts them.
+# to CC. cctools relies on K&R-style function definitions (removed in C23) as
+# well as GNU/POSIX extensions; strict ISO C also hides the POSIX/POSIX-2008
+# declarations it needs (__STRICT_ANSI__). gnu99 is the lowest standard that
+# builds the whole tree, so pin that.
 case "$CC" in
   *-std=gnu23*)
-    CC="$CC -std=gnu17"
+    CC="$CC -std=gnu99"
   ;;
 esac
 AM_PROG_CC_C_O
