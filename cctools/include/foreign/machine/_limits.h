@@ -25,7 +25,7 @@
  * 
  * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
  */
-#if defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
+#if defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__) || defined(__APPLE__)
 #include_next <machine/_limits.h>
 #else
 #ifndef _BSD_MACHINE__LIMITS_H_

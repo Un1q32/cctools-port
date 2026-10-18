@@ -25,6 +25,11 @@
  * 
  * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
  */
+#if defined(__APPLE__)
+/* On an Apple host (macOS/iOS) the SDK ships the correct
+ * per-architecture definitions, so defer to it. */
+#include_next <machine/vmparam.h>
+#else
 #ifndef _BSD_MACHINE_VMPARAM_H_
 #define _BSD_MACHINE_VMPARAM_H_
 
@@ -35,3 +40,4 @@
 #endif
 
 #endif /* _BSD_MACHINE_VMPARAM_H_ */
+#endif /* __APPLE__ */
