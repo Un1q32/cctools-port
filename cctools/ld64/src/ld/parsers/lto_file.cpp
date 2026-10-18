@@ -27,6 +27,7 @@
 #ifndef __LTO_READER_H__
 #define __LTO_READER_H__
 
+#include <algorithm>
 #include <stdlib.h>
 #include <pthread.h>
 #include <sys/param.h>

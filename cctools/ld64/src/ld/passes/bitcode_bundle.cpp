@@ -24,6 +24,7 @@
 
 #if defined(HAVE_XAR_XAR_H) && defined(LTO_SUPPORT) // ld64-port
 
+#include <algorithm>
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
