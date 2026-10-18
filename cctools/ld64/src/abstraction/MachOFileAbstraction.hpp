@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*- 
  *
- * Copyright (c) 2005-2010 Apple Inc. All rights reserved.
+ * Copyright (c) 2005-2008 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -30,20 +30,22 @@
 #include <mach-o/fat.h>
 #include <mach-o/stab.h>
 #include <mach-o/reloc.h>
+#include <mach-o/ppc/reloc.h>
 #include <mach-o/x86_64/reloc.h>
+#include <mach-o/arm/reloc.h>
 #include <mach-o/compact_unwind_encoding.h>
 #include <mach/machine.h>
-#include <stddef.h>
 
 #include "FileAbstraction.hpp"
 
-#include "configure.h"
 
 // stuff that will eventually go away once newer cctools headers are widespread
-#ifndef LC_LOAD_UPWARD_DYLIB
-	#define	LC_LOAD_UPWARD_DYLIB (0x23|LC_REQ_DYLD)	/* load of dylib whose initializers run later */
+#ifndef CPU_SUBTYPE_ARM_V4T
+	#define CPU_SUBTYPE_ARM_V4T	  	    ((cpu_subtype_t) 5)
 #endif
-
+#ifndef CPU_SUBTYPE_ARM_V6
+	#define CPU_SUBTYPE_ARM_V6	  	    ((cpu_subtype_t) 6)
+#endif
 #ifndef CPU_SUBTYPE_ARM_V5TEJ
 	#define CPU_SUBTYPE_ARM_V5TEJ		((cpu_subtype_t) 7)
 #endif
@@ -53,7 +55,15 @@
 #ifndef CPU_SUBTYPE_ARM_V7
 	#define CPU_SUBTYPE_ARM_V7			((cpu_subtype_t) 9)
 #endif
-
+#ifndef CPU_SUBTYPE_ARM_ALL
+	#define CPU_SUBTYPE_ARM_ALL	  	    ((cpu_subtype_t) 12)
+#endif
+#ifndef CPU_TYPE_ARM
+	#define CPU_TYPE_ARM	  	        ((cpu_type_t) 12)
+#endif
+#ifndef ARM_THUMB_32BIT_BRANCH
+	#define ARM_THUMB_32BIT_BRANCH	7 
+#endif
 #ifndef N_ARM_THUMB_DEF
 	#define N_ARM_THUMB_DEF	0x0008 
 #endif
@@ -133,182 +143,6 @@
 	#define EXPORT_SYMBOL_FLAGS_HAS_SPECIALIZATIONS			0x10
 
 #endif 
-
-#ifndef S_THREAD_LOCAL_REGULAR
-	#define S_THREAD_LOCAL_REGULAR                   0x11
-#endif
-
-#ifndef S_THREAD_LOCAL_ZEROFILL
-	#define S_THREAD_LOCAL_ZEROFILL                  0x12
-#endif
-
-#ifndef S_THREAD_LOCAL_VARIABLES
-	#define S_THREAD_LOCAL_VARIABLES                 0x13
-#endif
-
-#ifndef S_THREAD_LOCAL_VARIABLE_POINTERS
-	#define S_THREAD_LOCAL_VARIABLE_POINTERS         0x14
-#endif
-
-#ifndef S_THREAD_LOCAL_INIT_FUNCTION_POINTERS
-	#define S_THREAD_LOCAL_INIT_FUNCTION_POINTERS    0x15
-#endif
-
-#ifndef MH_HAS_TLV_DESCRIPTORS
-	#define MH_HAS_TLV_DESCRIPTORS 0x800000
-#endif
-
-#ifndef X86_64_RELOC_TLV
-	#define X86_64_RELOC_TLV    9
-#endif
-
-#define GENERIC_RLEOC_TLV  5
-
-#ifndef EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER
-	#define EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER 0x10
-#endif
-
-#ifndef EXPORT_SYMBOL_FLAGS_REEXPORT
-	#define EXPORT_SYMBOL_FLAGS_REEXPORT 0x08
-#endif
-
-// type internal to linker
-#define BIND_TYPE_OVERRIDE_OF_WEAKDEF_IN_DYLIB 0
-
-#ifndef LC_VERSION_MIN_MACOSX
-	#define	LC_VERSION_MIN_MACOSX 	0x24
-	#define	LC_VERSION_MIN_IPHONEOS 	0x25
-
-	struct version_min_command {
-		uint32_t	cmd;		/* LC_VERSION_MIN_MACOSX or LC_VERSION_MIN_IPHONEOS  */
-		uint32_t	cmdsize;	/* sizeof(struct min_version_command) */
-		uint32_t	version;	/* X.Y.Z is encoded in nibbles xxxx.yy.zz */
-		uint32_t	reserved;	/* zero */
-	};
-#endif
-
-#ifndef N_SYMBOL_RESOLVER
-	#define N_SYMBOL_RESOLVER 0x100
-#endif
-
-#ifndef LC_FUNCTION_STARTS
-	#define	LC_FUNCTION_STARTS 	0x26
-#endif
-
-#ifndef MH_NO_HEAP_EXECUTION
-	#define MH_NO_HEAP_EXECUTION 0x1000000
-#endif
-
-#ifndef LC_DYLD_ENVIRONMENT
-	#define	LC_DYLD_ENVIRONMENT 	0x27
-#endif
-
-#ifndef LC_DATA_IN_CODE
-	#define LC_DATA_IN_CODE 0x29 /* table of non-instructions in __text */
-	struct data_in_code_entry {
-		uint32_t	offset;
-		uint16_t	length;
-		uint16_t	kind;
-	};
-#endif
-
-#ifndef LC_DYLIB_CODE_SIGN_DRS
-	#define LC_DYLIB_CODE_SIGN_DRS 0x2B
-#endif
-
-#ifndef CPU_SUBTYPE_ARM_V7F
-  #define CPU_SUBTYPE_ARM_V7F    ((cpu_subtype_t) 10)
-#endif
-#ifndef CPU_SUBTYPE_ARM_V7K
-  #define CPU_SUBTYPE_ARM_V7K    ((cpu_subtype_t) 12)
-#endif
-#ifndef CPU_SUBTYPE_ARM_V7S
-  #define CPU_SUBTYPE_ARM_V7S    ((cpu_subtype_t) 11)
-#endif
-
-
-#ifndef LC_SOURCE_VERSION
-	#define LC_SOURCE_VERSION 0x2A
-	struct source_version_command {
-		uint32_t  cmd;	/* LC_SOURCE_VERSION */
-		uint32_t  cmdsize;	/* 16 */
-		uint64_t  version;	/* A.B.C.D.E packed as a24.b10.c10.d10.e10 */
-	};
-#endif
-
-#ifndef LC_MAIN
-	#define LC_MAIN (0x28|LC_REQ_DYLD) /* replacement for LC_UNIXTHREAD */
-	struct entry_point_command {
-		uint32_t  cmd;	/* LC_MAIN only used in MH_EXECUTE filetypes */
-		uint32_t  cmdsize;	/* 24 */
-		uint64_t  entryoff;	/* file (__TEXT) offset of main() */
-		uint64_t  stacksize;/* if not zero, initial stack size */
-	};
-#endif
-
-#ifndef LC_DYLIB_CODE_SIGN_DRS
-	#define LC_DYLIB_CODE_SIGN_DRS 0x2B 
-#endif	
-
-
-struct ArchInfo {
-	const char*			archName;
-	cpu_type_t			cpuType;
-	cpu_subtype_t		cpuSubType;
-	const char*			llvmTriplePrefix;
-	const char*			llvmTriplePrefixAlt;
-	bool				isSubType;
-	bool				supportsThumb2;
-};
-
-static const ArchInfo archInfoArray[] = {
-#if SUPPORT_ARCH_x86_64
-	{ "x86_64", CPU_TYPE_X86_64, CPU_SUBTYPE_X86_64_ALL, "x86_64-",  "", false, false },
-#endif
-#if SUPPORT_ARCH_i386
-	{ "i386",   CPU_TYPE_I386,   CPU_SUBTYPE_I386_ALL,   "i386-",    "", false, false },
-#endif
-#if SUPPORT_ARCH_armv4t
-	{ "armv4t", CPU_TYPE_ARM,    CPU_SUBTYPE_ARM_V4T,    "armv4t-",  "", true,  false },
-	#define SUPPORT_ARCH_arm_any 1
-#endif
-#if SUPPORT_ARCH_armv5
-	{ "armv5", CPU_TYPE_ARM,     CPU_SUBTYPE_ARM_V5TEJ,  "armv5e-",  "", true,  false },
-	#define SUPPORT_ARCH_arm_any 1
-#endif
-#if SUPPORT_ARCH_armv6
-	{ "armv6", CPU_TYPE_ARM,     CPU_SUBTYPE_ARM_V6,     "armv6-",   "", true,  false },
-	#define SUPPORT_ARCH_arm_any 1
-#endif
-#if SUPPORT_ARCH_armv7
-	{ "armv7", CPU_TYPE_ARM,     CPU_SUBTYPE_ARM_V7,     "thumbv7-", "armv7-", true,  true },
-	#define SUPPORT_ARCH_arm_any 1
-#endif
-#if SUPPORT_ARCH_armv7f
-	{ "armv7f", CPU_TYPE_ARM,    CPU_SUBTYPE_ARM_V7F,    "thumbv7f-", "", true,  true },
-	#define SUPPORT_ARCH_arm_any 1
-#endif 
-#if SUPPORT_ARCH_armv7k
-	{ "armv7k", CPU_TYPE_ARM,    CPU_SUBTYPE_ARM_V7K,    "thumbv7k-", "", true,  true },
-	#define SUPPORT_ARCH_arm_any 1
-#endif
-#if SUPPORT_ARCH_armv7s
-	{ "armv7s", CPU_TYPE_ARM,    CPU_SUBTYPE_ARM_V7S,    "thumbv7s-", "armv7s", true,  true },
-	#define SUPPORT_ARCH_arm_any 1
-#endif
-	{ NULL, 0, 0, NULL, NULL, false, false }
-};
-
-
-// weird, but this include must wait until after SUPPORT_ARCH_arm_any is set up
-#if SUPPORT_ARCH_arm_any
-#include <mach-o/arm/reloc.h>
-#endif
-
-// hack until newer <mach-o/arm/reloc.h> everywhere
-#define ARM_RELOC_HALF 8
-#define ARM_RELOC_HALF_SECTDIFF 9
-
 
 
 //
@@ -649,7 +483,7 @@ public:
 	void			set_cmdsize(uint32_t value)				INLINE { E::set32(fields.cmdsize, value); }
 
 	const uint8_t*	uuid() const							INLINE { return fields.uuid; }
-	void			set_uuid(const uint8_t u[16])			INLINE { memcpy(&fields.uuid, u, 16); }
+	void			set_uuid(uint8_t u[16])					INLINE { memcpy(&fields.uuid, u, 16); }
 			
 	typedef typename P::E		E;
 private:
@@ -1337,134 +1171,6 @@ private:
 };
 
 
-//
-// mach-o version load command
-//
-template <typename P>
-class macho_version_min_command {
-public:
-	uint32_t		cmd() const								INLINE { return E::get32(fields.cmd); }
-	void			set_cmd(uint32_t value)					INLINE { E::set32(fields.cmd, value); }
-
-	uint32_t		cmdsize() const							INLINE { return E::get32(fields.cmdsize); }
-	void			set_cmdsize(uint32_t value)				INLINE { E::set32(fields.cmdsize, value); }
-
-	uint32_t		version() const							INLINE { return fields.version; }
-	void			set_version(uint32_t value)				INLINE { E::set32(fields.version, value); }
-
-#ifdef DICE_KIND_DATA
-	uint32_t		sdk() const								INLINE { return fields.sdk; }
-	void			set_sdk(uint32_t value)					INLINE { E::set32(fields.sdk, value); }
-#else
-	uint32_t		sdk() const								INLINE { return fields.reserved; }
-	void			set_sdk(uint32_t value)					INLINE { E::set32(fields.reserved, value); }
-#endif
-
-	typedef typename P::E		E;
-private:
-	version_min_command	fields;
-};
-
-
-//
-// mach-o __LD, __compact_unwind section in object files
-//
-template <typename P>
-class macho_compact_unwind_entry {
-public:
-	typedef typename P::E		E;
-	typedef typename P::uint_t	pint_t;
-
-	pint_t			codeStart() const						INLINE { return P::getP(_codeStart); }
-	void			set_codeStart(pint_t value)				INLINE { P::setP(_codeStart, value); }
-
-	uint32_t		codeLen() const							INLINE { return E::get32(_codeLen); }
-	void			set_codeLen(uint32_t value)				INLINE { E::set32(_codeLen, value); }
-
-	uint32_t		compactUnwindInfo() const				INLINE { return E::get32(_compactUnwindInfo); }
-	void			set_compactUnwindInfo(uint32_t value)	INLINE { E::set32(_compactUnwindInfo, value);  }
-	
-	pint_t			personality() const						INLINE { return P::getP(_personality); }
-	void			set_personality(pint_t value)			INLINE { P::setP(_personality, value);  }
-	
-	pint_t			lsda() const							INLINE { return P::getP(_lsda); }
-	void			set_lsda(pint_t value)					INLINE { P::setP(_lsda, value);  }
-	
-	static uint32_t	codeStartFieldOffset()					INLINE { return offsetof(macho_compact_unwind_entry<P>,_codeStart); }
-	static uint32_t	personalityFieldOffset()				INLINE { return offsetof(macho_compact_unwind_entry<P>,_personality); }
-	static uint32_t	lsdaFieldOffset()						INLINE { return offsetof(macho_compact_unwind_entry<P>,_lsda); }
-	
-private:
-	pint_t		_codeStart;
-	uint32_t	_codeLen;
-	uint32_t	_compactUnwindInfo;
-	pint_t		_personality;
-	pint_t		_lsda;
-};
-
-
-//
-// mach-o source version load command
-//
-template <typename P>
-class macho_source_version_command {
-public:
-	uint32_t		cmd() const								INLINE { return E::get32(fields.cmd); }
-	void			set_cmd(uint32_t value)					INLINE { E::set32(fields.cmd, value); }
-
-	uint32_t		cmdsize() const							INLINE { return E::get32(fields.cmdsize); }
-	void			set_cmdsize(uint32_t value)				INLINE { E::set32(fields.cmdsize, value); }
-
-	uint64_t		version() const							INLINE { return fields.version; }
-	void			set_version(uint64_t value)				INLINE { E::set64(fields.version, value); }
-
-	typedef typename P::E		E;
-private:
-	source_version_command	fields;
-};
-
-
-//
-// mach-o source version load command
-//
-template <typename P>
-class macho_entry_point_command {
-public:
-	uint32_t		cmd() const								INLINE { return E::get32(fields.cmd); }
-	void			set_cmd(uint32_t value)					INLINE { E::set32(fields.cmd, value); }
-
-	uint32_t		cmdsize() const							INLINE { return E::get32(fields.cmdsize); }
-	void			set_cmdsize(uint32_t value)				INLINE { E::set32(fields.cmdsize, value); }
-
-	uint64_t		entryoff() const						INLINE { return fields.entryoff; }
-	void			set_entryoff(uint64_t value)			INLINE { E::set64(fields.entryoff, value); }
-
-	uint64_t		stacksize() const						INLINE { return fields.stacksize; }
-	void			set_stacksize(uint64_t value)			INLINE { E::set64(fields.stacksize, value); }
-
-	typedef typename P::E		E;
-private:
-	entry_point_command	fields;
-};
-
-
-
-template <typename P>
-class macho_data_in_code_entry {
-public:
-	uint32_t		offset() const								INLINE { return E::get32(fields.offset); }
-	void			set_offset(uint32_t value)					INLINE { E::set32(fields.offset, value); }
-
-	uint16_t		length() const								INLINE { return E::get16(fields.length); }
-	void			set_length(uint16_t value)					INLINE { E::set16((uint16_t&)fields.length, value); }
-
-	uint16_t		kind() const								INLINE { return E::get16(fields.kind); }
-	void			set_kind(uint16_t value)					INLINE { E::set16((uint16_t&)fields.kind, value); }
-
-	typedef typename P::E		E;
-private:
-	data_in_code_entry	fields;
-};
 
 
 #endif	// __MACH_O_FILE_ABSTRACTION__

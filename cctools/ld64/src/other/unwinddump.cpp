@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*- 
  *
- * Copyright (c) 2008-2011 Apple Inc. All rights reserved.
+ * Copyright (c) 2008 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -59,10 +59,8 @@ class UnwindPrinter
 {
 public:
 	static bool									validFile(const uint8_t* fileContent);
-	static UnwindPrinter<A>*						make(const uint8_t* fileContent, uint32_t fileLength, 
-															const char* path, bool showFunctionNames) 
-														{ return new UnwindPrinter<A>(fileContent, fileLength, 
-																						path, showFunctionNames); }
+	static UnwindPrinter<A>*						make(const uint8_t* fileContent, uint32_t fileLength, const char* path) 
+														{ return new UnwindPrinter<A>(fileContent, fileLength, path); }
 	virtual										~UnwindPrinter() {}
 
 
@@ -79,16 +77,11 @@ private:
 
 	typedef __gnu_cxx::hash_set<const char*, __gnu_cxx::hash<const char*>, CStringEquals>  StringSet;
 
-												UnwindPrinter(const uint8_t* fileContent, uint32_t fileLength, 
-																const char* path, bool showFunctionNames);
+												UnwindPrinter(const uint8_t* fileContent, uint32_t fileLength, const char* path);
 	bool										findUnwindSection();
-	void										printUnwindSection(bool showFunctionNames);
-	void										printObjectUnwindSection(bool showFunctionNames);
+	void										printUnwindSection();
 	void										getSymbolTableInfo();
-	const char*									functionName(pint_t addr, uint32_t* offset=NULL);
-	const char*									personalityName(const macho_relocation_info<typename A::P>* reloc);
-	bool										hasExernReloc(uint64_t sectionOffset, const char** personalityStr, pint_t* addr=NULL);
-
+	const char*									functionName(pint_t addr);
 	static const char*							archName();
 	static void									decode(uint32_t encoding, const uint8_t* funcStart, char* str);
 		
@@ -104,10 +97,47 @@ private:
 };
 
 
+template <>	 const char*	UnwindPrinter<ppc>::archName()		{ return "ppc"; }
+template <>	 const char*	UnwindPrinter<ppc64>::archName()	{ return "ppc64"; }
 template <>	 const char*	UnwindPrinter<x86>::archName()		{ return "i386"; }
 template <>	 const char*	UnwindPrinter<x86_64>::archName()	{ return "x86_64"; }
 template <>	 const char*	UnwindPrinter<arm>::archName()		{ return "arm"; }
 
+template <>
+bool UnwindPrinter<ppc>::validFile(const uint8_t* fileContent)
+{	
+	const macho_header<P>* header = (const macho_header<P>*)fileContent;
+	if ( header->magic() != MH_MAGIC )
+		return false;
+	if ( header->cputype() != CPU_TYPE_POWERPC )
+		return false;
+	switch (header->filetype()) {
+		case MH_EXECUTE:
+		case MH_DYLIB:
+		case MH_BUNDLE:
+		case MH_DYLINKER:
+			return true;
+	}
+	return false;
+}
+
+template <>
+bool UnwindPrinter<ppc64>::validFile(const uint8_t* fileContent)
+{	
+	const macho_header<P>* header = (const macho_header<P>*)fileContent;
+	if ( header->magic() != MH_MAGIC_64 )
+		return false;
+	if ( header->cputype() != CPU_TYPE_POWERPC64 )
+		return false;
+	switch (header->filetype()) {
+		case MH_EXECUTE:
+		case MH_DYLIB:
+		case MH_BUNDLE:
+		case MH_DYLINKER:
+			return true;
+	}
+	return false;
+}
 
 template <>
 bool UnwindPrinter<x86>::validFile(const uint8_t* fileContent)
@@ -122,7 +152,6 @@ bool UnwindPrinter<x86>::validFile(const uint8_t* fileContent)
 		case MH_DYLIB:
 		case MH_BUNDLE:
 		case MH_DYLINKER:
-		case MH_OBJECT:
 			return true;
 	}
 	return false;
@@ -141,7 +170,24 @@ bool UnwindPrinter<x86_64>::validFile(const uint8_t* fileContent)
 		case MH_DYLIB:
 		case MH_BUNDLE:
 		case MH_DYLINKER:
-		case MH_OBJECT:
+			return true;
+	}
+	return false;
+}
+
+template <>
+bool UnwindPrinter<arm>::validFile(const uint8_t* fileContent)
+{	
+	const macho_header<P>* header = (const macho_header<P>*)fileContent;
+	if ( header->magic() != MH_MAGIC )
+		return false;
+	if ( header->cputype() != CPU_TYPE_ARM )
+		return false;
+	switch (header->filetype()) {
+		case MH_EXECUTE:
+		case MH_DYLIB:
+		case MH_BUNDLE:
+		case MH_DYLINKER:
 			return true;
 	}
 	return false;
@@ -149,7 +195,7 @@ bool UnwindPrinter<x86_64>::validFile(const uint8_t* fileContent)
 
 
 template <typename A>
-UnwindPrinter<A>::UnwindPrinter(const uint8_t* fileContent, uint32_t fileLength, const char* path, bool showFunctionNames)
+UnwindPrinter<A>::UnwindPrinter(const uint8_t* fileContent, uint32_t fileLength, const char* path)
  : fHeader(NULL), fLength(fileLength), fUnwindSection(NULL),
    fStrings(NULL), fStringsEnd(NULL), fSymbols(NULL), fSymbolCount(0), fMachHeaderAddress(0)
 {
@@ -162,12 +208,8 @@ UnwindPrinter<A>::UnwindPrinter(const uint8_t* fileContent, uint32_t fileLength,
 	
 	getSymbolTableInfo();
 	
-	if ( findUnwindSection() ) {
-		if ( fHeader->filetype() == MH_OBJECT ) 
-			printObjectUnwindSection(showFunctionNames);
-		else
-			printUnwindSection(showFunctionNames);
-	}
+	if ( findUnwindSection() )
+		printUnwindSection();
 }
 
 
@@ -198,11 +240,8 @@ void UnwindPrinter<A>::getSymbolTableInfo()
 }
 
 template <typename A>
-const char* UnwindPrinter<A>::functionName(pint_t addr, uint32_t* offset)
+const char* UnwindPrinter<A>::functionName(pint_t addr)
 {
-	const macho_nlist<P>* closestSymbol = NULL;
-	if ( offset != NULL )
-		*offset = 0;
 	for (uint32_t i=0; i < fSymbolCount; ++i) {
 		uint8_t type = fSymbols[i].n_type();
 		if ( ((type & N_STAB) == 0) && ((type & N_TYPE) == N_SECT) ) {
@@ -211,21 +250,7 @@ const char* UnwindPrinter<A>::functionName(pint_t addr, uint32_t* offset)
 				//fprintf(stderr, "addr=0x%08llX, i=%u, n_type=0x%0X, r=%s\n", (long long)(fSymbols[i].n_value()), i,  fSymbols[i].n_type(), r);
 				return r;
 			}
-			else if ( offset != NULL ) {
-				if ( closestSymbol == NULL ) {
-					if ( fSymbols[i].n_value() < addr )
-						closestSymbol = &fSymbols[i];
-				}
-				else {
-					if ( (fSymbols[i].n_value() < addr) && (fSymbols[i].n_value() > closestSymbol->n_value()) )
-						closestSymbol = &fSymbols[i];
-				}
-			}
 		}
-	}
-	if ( closestSymbol != NULL ) {
-		*offset = addr - closestSymbol->n_value();
-		return &fStrings[closestSymbol->n_strx()];
 	}
 	return "--anonymous function--";
 }
@@ -235,12 +260,6 @@ const char* UnwindPrinter<A>::functionName(pint_t addr, uint32_t* offset)
 template <typename A>
 bool UnwindPrinter<A>::findUnwindSection()
 {
-	const char* unwindSectionName = "__unwind_info";
-	const char* unwindSegmentName = "__TEXT";
-	if ( fHeader->filetype() == MH_OBJECT ) {
-		unwindSectionName = "__compact_unwind";
-		unwindSegmentName = "__LD";
-	}
 	const uint8_t* const endOfFile = (uint8_t*)fHeader + fLength;
 	const uint8_t* const endOfLoadCommands = (uint8_t*)fHeader + sizeof(macho_header<P>) + fHeader->sizeofcmds();
 	const uint32_t cmd_count = fHeader->ncmds();
@@ -258,7 +277,7 @@ bool UnwindPrinter<A>::findUnwindSection()
 			const macho_section<P>* const sectionsStart = (macho_section<P>*)((char*)segCmd + sizeof(macho_segment_command<P>));
 			const macho_section<P>* const sectionsEnd = &sectionsStart[segCmd->nsects()];
 			for(const macho_section<P>* sect = sectionsStart; sect < sectionsEnd; ++sect) {
-				if ( (strncmp(sect->sectname(), unwindSectionName, 16) == 0) && (strcmp(sect->segname(), unwindSegmentName) == 0) ) {
+				if ( (strcmp(sect->sectname(), "__unwind_info") == 0) && (strcmp(sect->segname(), "__TEXT") == 0) ) {
 					fUnwindSection = sect;
 					fMachHeaderAddress = segCmd->vmaddr();
 					return fUnwindSection;
@@ -395,7 +414,7 @@ void UnwindPrinter<x86_64>::decode(uint32_t encoding, const uint8_t* funcStart, 
 				// renumber registers back to standard numbers
 				int registers[6];
 				bool used[7] = { false, false, false, false, false, false, false };
-				for (uint32_t i=0; i < regCount; ++i) { // ld64-port: int -> uint32_t
+				for (int i=0; i < regCount; ++i) {
 					int renum = 0; 
 					for (int u=1; u < 7; ++u) {
 						if ( !used[u] ) {
@@ -409,7 +428,7 @@ void UnwindPrinter<x86_64>::decode(uint32_t encoding, const uint8_t* funcStart, 
 					}
 				}
 				bool needComma = false;
-				for (uint32_t i=0; i < regCount; ++i) { // ld64-port: int -> uint32_t
+				for (int i=0; i < regCount; ++i) {
 					if ( needComma ) 
 						strcat(str, ",");
 					else
@@ -576,7 +595,7 @@ void UnwindPrinter<x86>::decode(uint32_t encoding, const uint8_t* funcStart, cha
 				// renumber registers back to standard numbers
 				int registers[6];
 				bool used[7] = { false, false, false, false, false, false, false };
-				for (uint32_t i=0; i < regCount; ++i) { // ld64-port: int -> uint32_t
+				for (int i=0; i < regCount; ++i) {
 					int renum = 0; 
 					for (int u=1; u < 7; ++u) {
 						if ( !used[u] ) {
@@ -590,7 +609,7 @@ void UnwindPrinter<x86>::decode(uint32_t encoding, const uint8_t* funcStart, cha
 					}
 				}
 				bool needComma = false;
-				for (uint32_t i=0; i < regCount; ++i) { // ld64-port: int -> uint32_t
+				for (int i=0; i < regCount; ++i) {
 					if ( needComma ) 
 						strcat(str, ",");
 					else
@@ -637,100 +656,15 @@ void UnwindPrinter<x86>::decode(uint32_t encoding, const uint8_t* funcStart, cha
 }
 
 
-
-template <>
-const char* UnwindPrinter<x86_64>::personalityName(const macho_relocation_info<x86_64::P>* reloc)
-{
-	//assert(reloc->r_extern() && "reloc not extern on personality column in __compact_unwind section");
-	//assert((reloc->r_type() == X86_64_RELOC_UNSIGNED) && "wrong reloc type on personality column in __compact_unwind section");
-	const macho_nlist<P>& sym = fSymbols[reloc->r_symbolnum()];
-	return &fStrings[sym.n_strx()];
-}
-
-template <>
-const char* UnwindPrinter<x86>::personalityName(const macho_relocation_info<x86::P>* reloc)
-{
-	//assert(reloc->r_extern() && "reloc not extern on personality column in __compact_unwind section");
-	//assert((reloc->r_type() == GENERIC_RELOC_VANILLA) && "wrong reloc type on personality column in __compact_unwind section");
-	const macho_nlist<P>& sym = fSymbols[reloc->r_symbolnum()];
-	return &fStrings[sym.n_strx()];
-}
-
 template <typename A>
-bool UnwindPrinter<A>::hasExernReloc(uint64_t sectionOffset, const char** personalityStr, pint_t* addr)
+void UnwindPrinter<A>::decode(uint32_t encoding, const uint8_t* funcStart, char* str)
 {
-	const macho_relocation_info<P>* relocs = (macho_relocation_info<P>*)((uint8_t*)fHeader + fUnwindSection->reloff());
-	const macho_relocation_info<P>* relocsEnd = &relocs[fUnwindSection->nreloc()];
-	for (const macho_relocation_info<P>* reloc = relocs; reloc < relocsEnd; ++reloc) {
-		if ( reloc->r_extern() && (reloc->r_address() == sectionOffset) ) {
-			*personalityStr = this->personalityName(reloc);
-			if ( addr != NULL )
-				*addr = fSymbols[reloc->r_symbolnum()].n_value();
-			return true;
-		}
-	}
-	return false;
-}
-
-
-template <typename A>
-void UnwindPrinter<A>::printObjectUnwindSection(bool showFunctionNames)
-{
-	printf("Arch: %s, Section: __LD,__compact_unwind (size=0x%08llX, => %lld entries)\n", 
-				archName(), fUnwindSection->size(), fUnwindSection->size() / sizeof(macho_compact_unwind_entry<P>));
 	
-	const macho_compact_unwind_entry<P>* const entriesStart = (macho_compact_unwind_entry<P>*)((uint8_t*)fHeader + fUnwindSection->offset());
-	const macho_compact_unwind_entry<P>* const entriesEnd = (macho_compact_unwind_entry<P>*)((uint8_t*)fHeader + fUnwindSection->offset() + fUnwindSection->size());
-	for (const macho_compact_unwind_entry<P>* entry=entriesStart; entry < entriesEnd; ++entry) {
-		uint64_t entryAddress = ((char*)entry - (char*)entriesStart) + fUnwindSection->addr();
-		printf("0x%08llX:\n", entryAddress);
-		const char* functionNameStr;
-		pint_t funcAddress;
-		uint32_t offsetInFunction;
-		funcAddress = 0; // ld64-port
-		if ( hasExernReloc(((char*)entry-(char*)entriesStart)+macho_compact_unwind_entry<P>::codeStartFieldOffset(), &functionNameStr, &funcAddress) ) {
-			offsetInFunction = entry->codeStart();
-		}
-		else {
-			functionNameStr = this->functionName(entry->codeStart(), &offsetInFunction);
-		}
-		if ( offsetInFunction == 0 )
-			printf("  start:        0x%08llX   %s\n", (uint64_t)funcAddress, functionNameStr);
-		else
-			printf("  start:        0x%08llX   %s+0x%X\n", (uint64_t)funcAddress+offsetInFunction, functionNameStr, offsetInFunction);
-		
-		printf("  end:          0x%08llX   (len=0x%08X)\n", (uint64_t)(funcAddress+offsetInFunction+entry->codeLen()), entry->codeLen());
-		
-		char encodingString[200];
-		this->decode(entry->compactUnwindInfo(), ((const uint8_t*)fHeader), encodingString);
-		printf("  unwind info:  0x%08X   %s\n", entry->compactUnwindInfo(), encodingString);
-		
-		const char* personalityNameStr;
-		if ( hasExernReloc(((char*)entry-(char*)entriesStart)+macho_compact_unwind_entry<P>::personalityFieldOffset(), &personalityNameStr) ) {
-			printf("  personality:              %s\n", personalityNameStr);
-		}
-		else {
-			printf("  personality:\n");
-		}
-		if ( entry->lsda() == 0 ) {
-			printf("  lsda:\n");
-		}
-		else {
-			uint32_t lsdaOffset;
-			const char* lsdaName = this->functionName(entry->lsda(), &lsdaOffset);
-			if ( lsdaOffset == 0 )
-				printf("  lsda:         0x%08llX  %s\n", (uint64_t)entry->lsda(), lsdaName);
-			else
-				printf("  lsda:         0x%08llX  %s+0x%X\n", (uint64_t)entry->lsda(), lsdaName, lsdaOffset);
-		}
-	}
-	
+
 }
 
-
-
 template <typename A>
-void UnwindPrinter<A>::printUnwindSection(bool showFunctionNames)
+void UnwindPrinter<A>::printUnwindSection()
 {
 	const uint8_t* sectionContent = (uint8_t*)fHeader + fUnwindSection->offset();
 	macho_unwind_info_section_header<P>* sectionHeader = (macho_unwind_info_section_header<P>*)(sectionContent);
@@ -766,8 +700,8 @@ void UnwindPrinter<A>::printUnwindSection(bool showFunctionNames)
 	printf("\tLSDA table: (section offset 0x%08X, count=%u)\n", lsdaIndexArraySectionOffset, lsdaIndexArrayCount);
 	macho_unwind_info_section_header_lsda_index_entry<P>* lindex = (macho_unwind_info_section_header_lsda_index_entry<P>*)&sectionContent[lsdaIndexArraySectionOffset];
 	for (uint32_t i=0; i < lsdaIndexArrayCount; ++i) {
-		const char* name = showFunctionNames ? functionName(lindex[i].functionOffset()+fMachHeaderAddress) : "";
-		printf("\t\t[%3u] funcOffset=0x%08X, lsdaOffset=0x%08X,  %s\n", i, lindex[i].functionOffset(), lindex[i].lsdaOffset(), name);
+		printf("\t\t[%3u] funcOffset=0x%08X, lsdaOffset=0x%08X,  %s\n", 
+					i, lindex[i].functionOffset(), lindex[i].lsdaOffset(), functionName(lindex[i].functionOffset()+fMachHeaderAddress));
 		if ( *(((uint8_t*)fHeader) + lindex[i].lsdaOffset()) != 0xFF )
 			fprintf(stderr, "BAD LSDA entry (does not start with 0xFF) for %s\n", functionName(lindex[i].functionOffset()+fMachHeaderAddress));
 	}
@@ -797,9 +731,8 @@ void UnwindPrinter<A>::printUnwindSection(bool showFunctionNames)
 				} 
 				char encodingString[100];
 				decode(entry[j].encoding(), ((const uint8_t*)fHeader)+funcOffset, encodingString);
-				const char* name = showFunctionNames ? functionName(funcOffset+fMachHeaderAddress) : "";
 				printf("\t\t\t[%3u] funcOffset=0x%08X, encoding=0x%08X (%-40s) %s\n", 
-					j, funcOffset, entry[j].encoding(), encodingString, name);
+					j, funcOffset, entry[j].encoding(), encodingString, functionName(funcOffset+fMachHeaderAddress));
 			}
 		}
 		else if ( page->kind() == UNWIND_SECOND_LEVEL_COMPRESSED ) {
@@ -822,7 +755,7 @@ void UnwindPrinter<A>::printUnwindSection(bool showFunctionNames)
 				char encodingString[100];
 				uint32_t funcOff = UNWIND_INFO_COMPRESSED_ENTRY_FUNC_OFFSET(entries[j])+baseFunctionOffset;
 				decode(encoding, ((const uint8_t*)fHeader)+funcOff, encodingString);
-				const char* name = showFunctionNames ? functionName(funcOff+fMachHeaderAddress) : "";
+				const char* name = functionName(funcOff+fMachHeaderAddress);
 				if ( encoding & UNWIND_HAS_LSDA ) {
 					// verify there is a corresponding entry in lsda table
 					bool found = false;
@@ -847,7 +780,7 @@ void UnwindPrinter<A>::printUnwindSection(bool showFunctionNames)
 
 }
 
-static void dump(const char* path, const std::set<cpu_type_t>& onlyArchs, bool showFunctionNames)
+static void dump(const char* path, const std::set<cpu_type_t>& onlyArchs)
 {
 	struct stat stat_buf;
 	
@@ -872,17 +805,35 @@ static void dump(const char* path, const std::set<cpu_type_t>& onlyArchs, bool s
 				unsigned int cputype = OSSwapBigToHostInt32(archs[i].cputype);
 				if ( onlyArchs.count(cputype) ) {
 					switch(cputype) {
+					case CPU_TYPE_POWERPC:
+						if ( UnwindPrinter<ppc>::validFile(p + offset) )
+							UnwindPrinter<ppc>::make(p + offset, size, path);
+						else
+							throw "in universal file, ppc slice does not contain ppc mach-o";
+						break;
 					case CPU_TYPE_I386:
 						if ( UnwindPrinter<x86>::validFile(p + offset) )
-							UnwindPrinter<x86>::make(p + offset, size, path, showFunctionNames);
+							UnwindPrinter<x86>::make(p + offset, size, path);
 						else
 							throw "in universal file, i386 slice does not contain i386 mach-o";
 						break;
+					case CPU_TYPE_POWERPC64:
+						if ( UnwindPrinter<ppc64>::validFile(p + offset) )
+							UnwindPrinter<ppc64>::make(p + offset, size, path);
+						else
+							throw "in universal file, ppc64 slice does not contain ppc64 mach-o";
+						break;
 					case CPU_TYPE_X86_64:
 						if ( UnwindPrinter<x86_64>::validFile(p + offset) )
-							UnwindPrinter<x86_64>::make(p + offset, size, path, showFunctionNames);
+							UnwindPrinter<x86_64>::make(p + offset, size, path);
 						else
 							throw "in universal file, x86_64 slice does not contain x86_64 mach-o";
+						break;
+					case CPU_TYPE_ARM:
+						if ( UnwindPrinter<arm>::validFile(p + offset) )
+							UnwindPrinter<arm>::make(p + offset, size, path);
+						else
+							throw "in universal file, arm slice does not contain arm mach-o";
 						break;
 					default:
 							throwf("in universal file, unknown architecture slice 0x%x\n", cputype);
@@ -891,10 +842,19 @@ static void dump(const char* path, const std::set<cpu_type_t>& onlyArchs, bool s
 			}
 		}
 		else if ( UnwindPrinter<x86>::validFile(p) && onlyArchs.count(CPU_TYPE_I386) ) {
-			UnwindPrinter<x86>::make(p, length, path, showFunctionNames);
+			UnwindPrinter<x86>::make(p, length, path);
+		}
+		else if ( UnwindPrinter<ppc>::validFile(p) && onlyArchs.count(CPU_TYPE_POWERPC) ) {
+			UnwindPrinter<ppc>::make(p, length, path);
+		}
+		else if ( UnwindPrinter<ppc64>::validFile(p) && onlyArchs.count(CPU_TYPE_POWERPC64) ) {
+			UnwindPrinter<ppc64>::make(p, length, path);
 		}
 		else if ( UnwindPrinter<x86_64>::validFile(p) && onlyArchs.count(CPU_TYPE_X86_64) ) {
-			UnwindPrinter<x86_64>::make(p, length, path, showFunctionNames);
+			UnwindPrinter<x86_64>::make(p, length, path);
+		}
+		else if ( UnwindPrinter<arm>::validFile(p) && onlyArchs.count(CPU_TYPE_ARM) ) {
+			UnwindPrinter<arm>::make(p, length, path);
 		}
 		else {
 			throw "not a known file type";
@@ -910,7 +870,6 @@ int main(int argc, const char* argv[])
 {
 	std::set<cpu_type_t> onlyArchs;
 	std::vector<const char*> files;
-	bool showFunctionNames = true;
 	
 	try {
 		for(int i=1; i < argc; ++i) {
@@ -918,15 +877,18 @@ int main(int argc, const char* argv[])
 			if ( arg[0] == '-' ) {
 				if ( strcmp(arg, "-arch") == 0 ) {
 					const char* arch = argv[++i];
-					if ( strcmp(arch, "i386") == 0 )
+					if ( strcmp(arch, "ppc") == 0 ) 
+						onlyArchs.insert(CPU_TYPE_POWERPC);
+					else if ( strcmp(arch, "ppc64") == 0 )
+						onlyArchs.insert(CPU_TYPE_POWERPC64);
+					else if ( strcmp(arch, "i386") == 0 )
 						onlyArchs.insert(CPU_TYPE_I386);
 					else if ( strcmp(arch, "x86_64") == 0 )
 						onlyArchs.insert(CPU_TYPE_X86_64);
+					else if ( strcmp(arch, "arm") == 0 )
+						onlyArchs.insert(CPU_TYPE_ARM);
 					else 
 						throwf("unknown architecture %s", arch);
-				}
-				else if ( strcmp(arg, "-no_symbols") == 0 ) {
-					showFunctionNames = false;
 				}
 				else {
 					throwf("unknown option: %s\n", arg);
@@ -939,13 +901,16 @@ int main(int argc, const char* argv[])
 		
 		// use all architectures if no restrictions specified
 		if ( onlyArchs.size() == 0 ) {
+			onlyArchs.insert(CPU_TYPE_POWERPC);
+			onlyArchs.insert(CPU_TYPE_POWERPC64);
 			onlyArchs.insert(CPU_TYPE_I386);
 			onlyArchs.insert(CPU_TYPE_X86_64);
+			onlyArchs.insert(CPU_TYPE_ARM);
 		}
 		
 		// process each file
 		for(std::vector<const char*>::iterator it=files.begin(); it != files.end(); ++it) {
-			dump(*it, onlyArchs, showFunctionNames);
+			dump(*it, onlyArchs);
 		}
 		
 	}

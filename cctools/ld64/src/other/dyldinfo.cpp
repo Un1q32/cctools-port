@@ -1,6 +1,6 @@
 /* -*- mode: C++; c-basic-offset: 4; tab-width: 4 -*- 
  *
- * Copyright (c) 2008-2010 Apple Inc. All rights reserved.
+ * Copyright (c) 2008-2009 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -38,7 +38,6 @@
 #include "MachOFileAbstraction.hpp"
 #include "Architectures.hpp"
 #include "MachOTrie.hpp"
-#include "../ld/code-sign-blobs/superblob.h"
 
 static bool printRebase = false;
 static bool printBind = false;
@@ -47,18 +46,12 @@ static bool printLazyBind = false;
 static bool printOpcodes = false;
 static bool printExport = false;
 static bool printExportGraph = false;
-static bool printExportNodes = false;
-static bool printSharedRegion = false;
-static bool printFunctionStarts = false;
-static bool printDylibs = false;
-static bool printDRs = false;
-static bool printDataCode = false;
-static cpu_type_t	sPreferredArch = 0;
+static cpu_type_t	sPreferredArch = CPU_TYPE_I386;
 static cpu_type_t	sPreferredSubArch = 0;
 
 
-__attribute__((noreturn))
-static void throwf(const char* format, ...) 
+ __attribute__((noreturn))
+void throwf(const char* format, ...) 
 {
 	va_list	list;
 	char*	p;
@@ -76,8 +69,8 @@ class DyldInfoPrinter
 {
 public:
 	static bool									validFile(const uint8_t* fileContent);
-	static DyldInfoPrinter<A>*					make(const uint8_t* fileContent, uint32_t fileLength, const char* path, bool printArch) 
-														{ return new DyldInfoPrinter<A>(fileContent, fileLength, path, printArch); }
+	static DyldInfoPrinter<A>*					make(const uint8_t* fileContent, uint32_t fileLength, const char* path) 
+														{ return new DyldInfoPrinter<A>(fileContent, fileLength, path); }
 	virtual										~DyldInfoPrinter() {}
 
 
@@ -94,7 +87,7 @@ private:
 
 	typedef __gnu_cxx::hash_set<const char*, __gnu_cxx::hash<const char*>, CStringEquals>  StringSet;
 
-												DyldInfoPrinter(const uint8_t* fileContent, uint32_t fileLength, const char* path, bool printArch);
+												DyldInfoPrinter(const uint8_t* fileContent, uint32_t fileLength, const char* path);
 	void										printRebaseInfo();
 	void										printRebaseInfoOpcodes();
 	void										printBindingInfo();
@@ -105,27 +98,18 @@ private:
 	void										printLazyBindingOpcodes();
 	void										printExportInfo();
 	void										printExportInfoGraph();
-	void										printExportInfoNodes();
 	void										printRelocRebaseInfo();
 	void										printSymbolTableExportInfo();
 	void										printClassicLazyBindingInfo();
 	void										printClassicBindingInfo();
-	void										printSharedRegionInfo();
-	void										printFunctionStartsInfo();
-	void										printDylibsInfo();
-	void										printDRInfo();
-	void										printDataInCode();
-	void										printFunctionStartLine(uint64_t addr);
-	const uint8_t*								printSharedRegionInfoForEachULEB128Address(const uint8_t* p, uint8_t kind);
 	pint_t										relocBase();
 	const char*									relocTypeName(uint8_t r_type);
 	uint8_t										segmentIndexForAddress(pint_t addr);
+	void										processExportNode(const uint8_t* const start, const uint8_t* p, const uint8_t* const end, 
+																char* cummulativeString, int curStrOffset);
 	void										processExportGraphNode(const uint8_t* const start, const uint8_t* const end,  
 																	const uint8_t* parent, const uint8_t* p,
 																	char* cummulativeString, int curStrOffset);
-	void										gatherNodeStarts(const uint8_t* const start, const uint8_t* const end,  
-																const uint8_t* parent, const uint8_t* p,
-																std::vector<uint32_t>& nodeStarts);
 	const char*									rebaseTypeName(uint8_t type);
 	const char*									bindTypeName(uint8_t type);
 	pint_t										segStartAddress(uint8_t segIndex);
@@ -135,7 +119,7 @@ private:
 	const char*									ordinalName(int libraryOrdinal);
 	const char*									classicOrdinalName(int libraryOrdinal);
 	pint_t*										mappedAddressForVMAddress(pint_t vmaddress);
-	const char*									symbolNameForAddress(uint64_t);
+
 
 		
 	const char*									fPath;
@@ -146,10 +130,6 @@ private:
 	const macho_nlist<P>*						fSymbols;
 	uint32_t									fSymbolCount;
 	const macho_dyld_info_command<P>*			fInfo;
-	const macho_linkedit_data_command<P>*		fSharedRegionInfo;
-	const macho_linkedit_data_command<P>*		fFunctionStartsInfo;
-	const macho_linkedit_data_command<P>*		fDataInCode;
-	const macho_linkedit_data_command<P>*		fDRInfo;
 	uint64_t									fBaseAddress;
 	const macho_dysymtab_command<P>*			fDynamicSymbolTable;
 	const macho_segment_command<P>*				fFirstSegment;
@@ -157,7 +137,6 @@ private:
 	bool										fWriteableSegmentWithAddrOver4G;
 	std::vector<const macho_segment_command<P>*>fSegments;
 	std::vector<const char*>					fDylibs;
-	std::vector<const macho_dylib_command<P>*>	fDylibLoadCommands;
 };
 
 
@@ -173,7 +152,6 @@ bool DyldInfoPrinter<ppc>::validFile(const uint8_t* fileContent)
 	switch (header->filetype()) {
 		case MH_EXECUTE:
 		case MH_DYLIB:
-		case MH_DYLIB_STUB:
 		case MH_BUNDLE:
 		case MH_DYLINKER:
 			return true;
@@ -192,7 +170,6 @@ bool DyldInfoPrinter<ppc64>::validFile(const uint8_t* fileContent)
 	switch (header->filetype()) {
 		case MH_EXECUTE:
 		case MH_DYLIB:
-		case MH_DYLIB_STUB:
 		case MH_BUNDLE:
 		case MH_DYLINKER:
 			return true;
@@ -211,7 +188,6 @@ bool DyldInfoPrinter<x86>::validFile(const uint8_t* fileContent)
 	switch (header->filetype()) {
 		case MH_EXECUTE:
 		case MH_DYLIB:
-		case MH_DYLIB_STUB:
 		case MH_BUNDLE:
 		case MH_DYLINKER:
 			return true;
@@ -230,7 +206,6 @@ bool DyldInfoPrinter<x86_64>::validFile(const uint8_t* fileContent)
 	switch (header->filetype()) {
 		case MH_EXECUTE:
 		case MH_DYLIB:
-		case MH_DYLIB_STUB:
 		case MH_BUNDLE:
 		case MH_DYLINKER:
 			return true;
@@ -238,7 +213,6 @@ bool DyldInfoPrinter<x86_64>::validFile(const uint8_t* fileContent)
 	return false;
 }
 
-#if SUPPORT_ARCH_arm_any
 template <>
 bool DyldInfoPrinter<arm>::validFile(const uint8_t* fileContent)
 {	
@@ -250,20 +224,17 @@ bool DyldInfoPrinter<arm>::validFile(const uint8_t* fileContent)
 	switch (header->filetype()) {
 		case MH_EXECUTE:
 		case MH_DYLIB:
-		case MH_DYLIB_STUB:
 		case MH_BUNDLE:
 		case MH_DYLINKER:
 			return true;
 	}
 	return false;
 }
-#endif
 
 template <typename A>
-DyldInfoPrinter<A>::DyldInfoPrinter(const uint8_t* fileContent, uint32_t fileLength, const char* path, bool printArch)
+DyldInfoPrinter<A>::DyldInfoPrinter(const uint8_t* fileContent, uint32_t fileLength, const char* path)
  : fHeader(NULL), fLength(fileLength), 
    fStrings(NULL), fStringsEnd(NULL), fSymbols(NULL), fSymbolCount(0), fInfo(NULL), 
-   fSharedRegionInfo(NULL), fFunctionStartsInfo(NULL), fDataInCode(NULL), fDRInfo(NULL), 
    fBaseAddress(0), fDynamicSymbolTable(NULL), fFirstSegment(NULL), fFirstWritableSegment(NULL),
    fWriteableSegmentWithAddrOver4G(false)
 {
@@ -310,11 +281,9 @@ DyldInfoPrinter<A>::DyldInfoPrinter(const uint8_t* fileContent, uint32_t fileLen
 			case LC_LOAD_DYLIB:
 			case LC_LOAD_WEAK_DYLIB:
 			case LC_REEXPORT_DYLIB:
-			case LC_LOAD_UPWARD_DYLIB:
 			case LC_LAZY_LOAD_DYLIB:
 				{
 				const macho_dylib_command<P>* dylib  = (macho_dylib_command<P>*)cmd;
-				fDylibLoadCommands.push_back(dylib);
 				const char* lastSlash = strrchr(dylib->name(), '/');
 				const char* leafName = (lastSlash != NULL) ? lastSlash+1 : dylib->name();
 				const char* firstDot = strchr(leafName, '.');
@@ -340,30 +309,8 @@ DyldInfoPrinter<A>::DyldInfoPrinter(const uint8_t* fileContent, uint32_t fileLen
 					fStringsEnd = fStrings + symtab->strsize();
 				}
 				break;
-			case LC_SEGMENT_SPLIT_INFO:
-				fSharedRegionInfo = (macho_linkedit_data_command<P>*)cmd;
-				break;
-			case LC_FUNCTION_STARTS:
-				fFunctionStartsInfo = (macho_linkedit_data_command<P>*)cmd;
-				break;
-			case LC_DATA_IN_CODE:
-				fDataInCode = (macho_linkedit_data_command<P>*)cmd;
-				break;
-			case LC_DYLIB_CODE_SIGN_DRS:
-				fDRInfo = (macho_linkedit_data_command<P>*)cmd;
-				break;
 		}
 		cmd = (const macho_load_command<P>*)endOfCmd;
-	}
-	
-	if ( printArch ) {
-		for (const ArchInfo* t=archInfoArray; t->archName != NULL; ++t) {
-			if ( (cpu_type_t)fHeader->cputype() == t->cpuType ) {
-				if ( t->isSubType && ((cpu_subtype_t)fHeader->cpusubtype() != t->cpuSubType) )
-					continue;
-				printf("for arch %s:\n", t->archName);
-			}
-		}
 	}
 	
 	if ( printRebase ) {
@@ -400,18 +347,6 @@ DyldInfoPrinter<A>::DyldInfoPrinter(const uint8_t* fileContent, uint32_t fileLen
 	}
 	if ( printExportGraph )
 		printExportInfoGraph();
-	if ( printExportNodes ) 
-		printExportInfoNodes();
-	if ( printSharedRegion )
-		printSharedRegionInfo();
-	if ( printFunctionStarts ) 
-		printFunctionStartsInfo();
-	if ( printDylibs )
-		printDylibsInfo();
-	if ( printDRs )
-		printDRInfo();
-	if ( printDataCode )
-		printDataInCode();
 }
 
 static uint64_t read_uleb128(const uint8_t*& p, const uint8_t* end)
@@ -444,7 +379,7 @@ static int64_t read_sleb128(const uint8_t*& p, const uint8_t* end)
 		if (p == end)
 			throwf("malformed sleb128");
 		byte = *p++;
-		result |= (((int64_t)(byte & 0x7f)) << bit);
+		result |= ((byte & 0x7f) << bit);
 		bit += 7;
 	} while (byte & 0x80);
 	// sign extend negative numbers
@@ -587,8 +522,6 @@ const char* DyldInfoPrinter<A>::ordinalName(int libraryOrdinal)
 template <typename A>
 const char* DyldInfoPrinter<A>::classicOrdinalName(int libraryOrdinal)
 {
-	if ( (fHeader->flags() & MH_TWOLEVEL) ==  0 )
-		return "flat-namespace";
 	switch ( libraryOrdinal) {
 		case SELF_LIBRARY_ORDINAL:
 			return "this-image";
@@ -624,7 +557,6 @@ void DyldInfoPrinter<A>::printRebaseInfo()
 		const char* segName = "??";
 		const char* typeName = "??";
 		bool done = false;
-		segIndex = 0; // ld64-port
 		while ( !done && (p < end) ) {
 			uint8_t immediate = *p & REBASE_IMMEDIATE_MASK;
 			uint8_t opcode = *p & REBASE_OPCODE_MASK;
@@ -879,7 +811,7 @@ void DyldInfoPrinter<A>::printBindingInfo()
 	}
 	else {
 		printf("bind information:\n");
-		printf("segment section          address        type    addend dylib            symbol\n");
+		printf("segment section          address        type   weak  addend dylib            symbol\n");
 		const uint8_t* p = (uint8_t*)fHeader + fInfo->bind_off();
 		const uint8_t* end = &p[fInfo->bind_size()];
 		
@@ -929,7 +861,7 @@ void DyldInfoPrinter<A>::printBindingInfo()
 						++p;
 					++p;
 					if ( (immediate & BIND_SYMBOL_FLAGS_WEAK_IMPORT) != 0 )
-						weak_import = " (weak import)";
+						weak_import = "weak";
 					else
 						weak_import = "";
 					break;
@@ -950,22 +882,22 @@ void DyldInfoPrinter<A>::printBindingInfo()
 					segOffset += read_uleb128(p, end);
 					break;
 				case BIND_OPCODE_DO_BIND:
-					printf("%-7s %-16s 0x%08llX %10s  %5lld %-16s %s%s\n", segName, sectionName(segIndex, segStartAddr+segOffset), segStartAddr+segOffset, typeName, addend, fromDylib, symbolName, weak_import );
+					printf("%-7s %-16s 0x%08llX %10s %4s  %5lld %-16s %s\n", segName, sectionName(segIndex, segStartAddr+segOffset), segStartAddr+segOffset, typeName, weak_import, addend, fromDylib, symbolName );
 					segOffset += sizeof(pint_t);
 					break;
 				case BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB:
-					printf("%-7s %-16s 0x%08llX %10s  %5lld %-16s %s%s\n", segName, sectionName(segIndex, segStartAddr+segOffset), segStartAddr+segOffset, typeName, addend, fromDylib, symbolName, weak_import );
+					printf("%-7s %-16s 0x%08llX %10s %4s  %5lld %-16s %s\n", segName, sectionName(segIndex, segStartAddr+segOffset), segStartAddr+segOffset, typeName, weak_import, addend, fromDylib, symbolName );
 					segOffset += read_uleb128(p, end) + sizeof(pint_t);
 					break;
 				case BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED:
-					printf("%-7s %-16s 0x%08llX %10s  %5lld %-16s %s%s\n", segName, sectionName(segIndex, segStartAddr+segOffset), segStartAddr+segOffset, typeName, addend, fromDylib, symbolName, weak_import );
+					printf("%-7s %-16s 0x%08llX %10s %4s  %5lld %-16s %s\n", segName, sectionName(segIndex, segStartAddr+segOffset), segStartAddr+segOffset, typeName, weak_import, addend, fromDylib, symbolName );
 					segOffset += immediate*sizeof(pint_t) + sizeof(pint_t);
 					break;
 				case BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB:
 					count = read_uleb128(p, end);
 					skip = read_uleb128(p, end);
 					for (uint32_t i=0; i < count; ++i) {
-						printf("%-7s %-16s 0x%08llX %10s  %5lld %-16s %s%s\n", segName, sectionName(segIndex, segStartAddr+segOffset), segStartAddr+segOffset, typeName, addend, fromDylib, symbolName, weak_import );
+						printf("%-7s %-16s 0x%08llX %10s %4s  %5lld %-16s %s\n", segName, sectionName(segIndex, segStartAddr+segOffset), segStartAddr+segOffset, typeName, weak_import, addend, fromDylib, symbolName );
 						segOffset += skip + sizeof(pint_t);
 					}
 					break;
@@ -1087,7 +1019,6 @@ void DyldInfoPrinter<A>::printLazyBindingInfo()
 		pint_t segStartAddr = 0;
 		const char* segName = "??";
 		const char* typeName = "??";
-		const char* weak_import = "";
 		for (const uint8_t* p=start; p < end; ) {
 			uint8_t immediate = *p & BIND_IMMEDIATE_MASK;
 			uint8_t opcode = *p & BIND_OPCODE_MASK;
@@ -1119,10 +1050,6 @@ void DyldInfoPrinter<A>::printLazyBindingInfo()
 					while (*p != '\0')
 						++p;
 					++p;
-					if ( (immediate & BIND_SYMBOL_FLAGS_WEAK_IMPORT) != 0 )
-						weak_import = " (weak import)";
-					else
-						weak_import = "";
 					break;
 				case BIND_OPCODE_SET_TYPE_IMM:
 					type = immediate;
@@ -1141,7 +1068,7 @@ void DyldInfoPrinter<A>::printLazyBindingInfo()
 					segOffset += read_uleb128(p, end);
 					break;
 				case BIND_OPCODE_DO_BIND:
-					printf("%-7s %-16s 0x%08llX 0x%04X %-16s %s%s\n", segName, sectionName(segIndex, segStartAddr+segOffset), segStartAddr+segOffset, lazy_offset, fromDylib, symbolName, weak_import);
+					printf("%-7s %-16s 0x%08llX 0x%04X %-16s %s\n", segName, sectionName(segIndex, segStartAddr+segOffset), segStartAddr+segOffset, lazy_offset, fromDylib, symbolName );
 					segOffset += sizeof(pint_t);
 					break;
 				default:
@@ -1250,6 +1177,35 @@ void DyldInfoPrinter<A>::printLazyBindingOpcodes()
 
 }
 
+
+template <typename A>
+void DyldInfoPrinter<A>::processExportNode(const uint8_t* const start, const uint8_t* p, const uint8_t* const end, 
+											char* cummulativeString, int curStrOffset) 
+{
+	const uint8_t terminalSize = *p++;
+	const uint8_t* children = p + terminalSize;
+	if ( terminalSize != 0 ) {
+		uint32_t flags = read_uleb128(p, end);
+		uint64_t address = read_uleb128(p, end);
+		if ( flags & EXPORT_SYMBOL_FLAGS_WEAK_DEFINITION )
+			fprintf(stdout, "0x%08llX [weak_def] %s\n", address, cummulativeString);
+		else
+			fprintf(stdout, "0x%08llX %s\n", address, cummulativeString);
+	}
+	const uint8_t childrenCount = *children++;
+	const uint8_t* s = children;
+	for (uint8_t i=0; i < childrenCount; ++i) {
+		int edgeStrLen = 0;
+		while (*s != '\0') {
+			cummulativeString[curStrOffset+edgeStrLen] = *s++;
+			++edgeStrLen;
+		}
+		cummulativeString[curStrOffset+edgeStrLen] = *s++;
+		uint32_t childNodeOffet = read_uleb128(s, end);
+		processExportNode(start, start+childNodeOffet, end, cummulativeString, curStrOffset+edgeStrLen);	
+	}
+}
+
 struct SortExportsByAddress
 {
      bool operator()(const mach_o::trie::Entry& left, const mach_o::trie::Entry& right)
@@ -1272,26 +1228,10 @@ void DyldInfoPrinter<A>::printExportInfo()
 		parseTrie(start, end, list);
 		//std::sort(list.begin(), list.end(), SortExportsByAddress());
 		for (std::vector<mach_o::trie::Entry>::iterator it=list.begin(); it != list.end(); ++it) {
-			if ( it->flags & EXPORT_SYMBOL_FLAGS_REEXPORT ) {
-				if ( it->importName[0] == '\0' )
-					fprintf(stdout, "[re-export] %s from dylib=%llu\n", it->name, it->other);
-				else
-					fprintf(stdout, "[re-export] %s from dylib=%llu named=%s\n", it->name, it->other, it->importName);
-			}
-			else {
-				const char* flags = "";
-				if ( it->flags & EXPORT_SYMBOL_FLAGS_WEAK_DEFINITION )
-					flags = "[weak_def] ";
-				else if ( (it->flags & EXPORT_SYMBOL_FLAGS_KIND_MASK) == EXPORT_SYMBOL_FLAGS_KIND_THREAD_LOCAL )
-					flags = "[per-thread] ";
-				if ( it->flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER ) {
-					flags = "[resolver] ";
-					fprintf(stdout, "0x%08llX  %s%s (resolver=0x%08llX)\n", fBaseAddress+it->address, flags, it->name, it->other);
-				}
-				else {
-					fprintf(stdout, "0x%08llX  %s%s\n", fBaseAddress+it->address, flags, it->name);
-				}
-			}
+			const char* flags = "";
+			if ( it->flags & EXPORT_SYMBOL_FLAGS_WEAK_DEFINITION )
+				flags = "[weak_def] ";
+			fprintf(stdout, "0x%08llX %s%s\n", fBaseAddress+it->address, flags, it->name);
 		}
 	}
 }
@@ -1303,27 +1243,13 @@ void DyldInfoPrinter<A>::processExportGraphNode(const uint8_t* const start, cons
 											char* cummulativeString, int curStrOffset) 
 {
 	const uint8_t* const me = p;
-	const uint8_t terminalSize = read_uleb128(p, end);
+	const uint8_t terminalSize = *p++;
 	const uint8_t* children = p + terminalSize;
 	if ( terminalSize != 0 ) {
 		uint32_t flags = read_uleb128(p, end);
-		if ( flags & EXPORT_SYMBOL_FLAGS_REEXPORT ) {
-			uint64_t ordinal = read_uleb128(p, end);
-			const char* importName = (const char*)p;
-			while (*p != '\0')
-				++p;
-			++p;
-			if ( *importName == '\0' ) 
-				printf("\tnode%03ld [ label=%s,re-export from dylib=%llu ];\n", (long)(me-start), cummulativeString, ordinal);
-			else
-				printf("\tnode%03ld [ label=%s,re-export %s from dylib=%llu ];\n", (long)(me-start), cummulativeString, importName, ordinal);
-		}
-		else {
-			uint64_t address = read_uleb128(p, end);
-			printf("\tnode%03ld [ label=%s,addr0x%08llX ];\n", (long)(me-start), cummulativeString, address);
-			if ( flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER )
-				read_uleb128(p, end);
-		}
+		(void)flags; // currently unused
+		uint64_t address = read_uleb128(p, end);
+		printf("\tnode%03ld [ label=%s,addr0x%08llX ];\n", (long)(me-start), cummulativeString, address);
 	}
 	else {
 		printf("\tnode%03ld;\n", (long)(me-start));
@@ -1360,357 +1286,6 @@ void DyldInfoPrinter<A>::printExportInfoGraph()
 	}
 }
 
-template <typename A>
-void DyldInfoPrinter<A>::gatherNodeStarts(const uint8_t* const start, const uint8_t* const end,  
-											const uint8_t* parent, const uint8_t* p,
-											std::vector<uint32_t>& nodeStarts) 
-{
-	nodeStarts.push_back(p-start);
-	const uint8_t terminalSize = read_uleb128(p, end);
-	const uint8_t* children = p + terminalSize;
-	
-	const uint8_t childrenCount = *children++;
-	const uint8_t* s = children;
-	for (uint8_t i=0; i < childrenCount; ++i) {
-		// skip over edge string
-		while (*s != '\0')
-			++s;
-		++s;
-		uint32_t childNodeOffet = read_uleb128(s, end);
-		gatherNodeStarts(start, end, start, start+childNodeOffet, nodeStarts);	
-	}
-}
-
-
-template <typename A>
-void DyldInfoPrinter<A>::printExportInfoNodes()
-{
-	if ( (fInfo == NULL) || (fInfo->export_off() == 0) ) {
-		printf("no compressed export info\n");
-	}
-	else {
-		const uint8_t* start = (uint8_t*)fHeader + fInfo->export_off();
-		const uint8_t* end = &start[fInfo->export_size()];
-		std::vector<uint32_t> nodeStarts;
-		gatherNodeStarts(start, end, start, start, nodeStarts);
-		std::sort(nodeStarts.begin(), nodeStarts.end());
-		for (std::vector<uint32_t>::const_iterator it=nodeStarts.begin(); it != nodeStarts.end(); ++it) {
-			printf("0x%04X: ", *it);
-			const uint8_t* p = start + *it;
-			uint64_t exportInfoSize = read_uleb128(p, end);
-			if ( exportInfoSize != 0 ) {
-				// print terminal info
-				uint64_t flags = read_uleb128(p, end);
-				if ( flags & EXPORT_SYMBOL_FLAGS_REEXPORT ) {
-					uint64_t ordinal = read_uleb128(p, end);
-					const char* importName = (const char*)p;
-					while (*p != '\0')
-						++p;
-					++p;
-					if ( strlen(importName) == 0 )
-						printf("[flags=REEXPORT ordinal=%llu] ", ordinal);
-					else
-						printf("[flags=REEXPORT ordinal=%llu import=%s] ", ordinal, importName);
-				}
-				else if ( flags & EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER ) {
-					uint64_t stub = read_uleb128(p, end);
-					uint64_t resolver = read_uleb128(p, end);
-					printf("[flags=STUB_AND_RESOLVER stub=0x%06llX resolver=0x%06llX] ", stub, resolver);
-				}
-				else {
-					uint64_t address = read_uleb128(p, end);
-					if ( (flags & EXPORT_SYMBOL_FLAGS_KIND_MASK) == EXPORT_SYMBOL_FLAGS_KIND_REGULAR )
-						printf("[addr=0x%06llX] ", address);
-					else if ( (flags & EXPORT_SYMBOL_FLAGS_KIND_MASK) == EXPORT_SYMBOL_FLAGS_KIND_THREAD_LOCAL)
-						printf("[flags=THREAD_LOCAL addr=0x%06llX] ", address);
-					else
-						printf("[flags=0x%llX addr=0x%06llX] ", flags, address);
-				}
-			}
-			// print child edges
-			const uint8_t childrenCount = *p++;
-			for (uint8_t i=0; i < childrenCount; ++i) {
-				const char* edgeName = (const char*)p;
-				while (*p != '\0')
-					++p;
-				++p;
-				uint32_t childNodeOffet = read_uleb128(p, end);
-				printf("%s->0x%04X", edgeName, childNodeOffet);
-				if ( i < (childrenCount-1) )
-					printf(", ");
-			}
-			printf("\n");
-		}
-	}
-}
-
-
-
-template <typename A>
-const uint8_t* DyldInfoPrinter<A>::printSharedRegionInfoForEachULEB128Address(const uint8_t* p, uint8_t kind)
-{
-	const char* kindStr =  "??";
-	switch (kind) {
-		case 1:
-			kindStr = "32-bit pointer";
-			break;
-		case 2:
-			kindStr = "64-bit pointer";
-			break;
-		case 3:
-			kindStr = "ppc hi16";
-			break;
-		case 4:
-			kindStr = "32-bit offset to IMPORT";
-			break;
-		case 5:
-			kindStr = "thumb2 movw";
-			break;
-		case 6:
-			kindStr = "ARM movw";
-			break;
-		case 0x10:
-			kindStr = "thumb2 movt low high 4 bits=0";
-			break;
-		case 0x11:
-			kindStr = "thumb2 movt low high 4 bits=1";
-			break;
-		case 0x12:
-			kindStr = "thumb2 movt low high 4 bits=2";
-			break;
-		case 0x13:
-			kindStr = "thumb2 movt low high 4 bits=3";
-			break;
-		case 0x14:
-			kindStr = "thumb2 movt low high 4 bits=4";
-			break;
-		case 0x15:
-			kindStr = "thumb2 movt low high 4 bits=5";
-			break;
-		case 0x16:
-			kindStr = "thumb2 movt low high 4 bits=6";
-			break;
-		case 0x17:
-			kindStr = "thumb2 movt low high 4 bits=7";
-			break;
-		case 0x18:
-			kindStr = "thumb2 movt low high 4 bits=8";
-			break;
-		case 0x19:
-			kindStr = "thumb2 movt low high 4 bits=9";
-			break;
-		case 0x1A:
-			kindStr = "thumb2 movt low high 4 bits=0xA";
-			break;
-		case 0x1B:
-			kindStr = "thumb2 movt low high 4 bits=0xB";
-			break;
-		case 0x1C:
-			kindStr = "thumb2 movt low high 4 bits=0xC";
-			break;
-		case 0x1D:
-			kindStr = "thumb2 movt low high 4 bits=0xD";
-			break;
-		case 0x1E:
-			kindStr = "thumb2 movt low high 4 bits=0xE";
-			break;
-		case 0x1F:
-			kindStr = "thumb2 movt low high 4 bits=0xF";
-			break;
-	}
-	uint64_t address = 0;
-	uint64_t delta = 0;
-	uint32_t shift = 0;
-	bool more = true;
-	do {
-		uint8_t byte = *p++;
-		delta |= ((byte & 0x7F) << shift);
-		shift += 7;
-		if ( byte < 0x80 ) {
-			if ( delta != 0 ) {
-				address += delta;
-				printf("0x%0llX   %s\n", address+fBaseAddress, kindStr); 
-				delta = 0;
-				shift = 0;
-			}
-			else {
-				more = false;
-			}
-		}
-	} while (more);
-	return p;
-}
-
-template <typename A>
-void DyldInfoPrinter<A>::printSharedRegionInfo()
-{
-	if ( (fSharedRegionInfo == NULL) || (fSharedRegionInfo->datasize() == 0) ) {
-		printf("no shared region info\n");
-	}
-	else {
-		const uint8_t* infoStart = (uint8_t*)fHeader + fSharedRegionInfo->dataoff();
-		const uint8_t* infoEnd = &infoStart[fSharedRegionInfo->datasize()];
-		for(const uint8_t* p = infoStart; (*p != 0) && (p < infoEnd);) {
-			uint8_t kind = *p++;
-			p = this->printSharedRegionInfoForEachULEB128Address(p, kind);
-		}
-
-	}
-}
-
-#if SUPPORT_ARCH_arm_any
-template <>
-void DyldInfoPrinter<arm>::printFunctionStartLine(uint64_t addr)
-{
-	if ( addr & 1 )
-		printf("0x%0llX [thumb] %s\n", (addr & -2), symbolNameForAddress(addr & -2)); 
-	else
-		printf("0x%0llX         %s\n", addr, symbolNameForAddress(addr)); 
-}
-#endif
-
-template <typename A>
-void DyldInfoPrinter<A>::printFunctionStartLine(uint64_t addr)
-{
-	printf("0x%0llX   %s\n", addr, symbolNameForAddress(addr)); 
-}
-
-
-template <typename A>
-void DyldInfoPrinter<A>::printFunctionStartsInfo()
-{
-	if ( (fFunctionStartsInfo == NULL) || (fFunctionStartsInfo->datasize() == 0) ) {
-		printf("no function starts info\n");
-	}
-	else {
-		const uint8_t* infoStart = (uint8_t*)fHeader + fFunctionStartsInfo->dataoff();
-		const uint8_t* infoEnd = &infoStart[fFunctionStartsInfo->datasize()];
-		uint64_t address = fBaseAddress;
-		for(const uint8_t* p = infoStart; (*p != 0) && (p < infoEnd); ) {
-			uint64_t delta = 0;
-			uint32_t shift = 0;
-			bool more = true;
-			do {
-				uint8_t byte = *p++;
-				delta |= ((byte & 0x7F) << shift);
-				shift += 7;
-				if ( byte < 0x80 ) {
-					address += delta;
-					printFunctionStartLine(address);
-					more = false;
-				}
-			} while (more);
-		}
-	}
-}
-
-template <typename A>
-void DyldInfoPrinter<A>::printDylibsInfo()
-{
-	printf("attributes     dependent dylibs\n");
-	for(typename std::vector<const macho_dylib_command<P>*>::iterator it = fDylibLoadCommands.begin(); it != fDylibLoadCommands.end(); ++it) {
-		const macho_dylib_command<P>* dylib  = *it;
-		const char* attribute = "";
-		switch ( dylib->cmd() ) {
-			case LC_LOAD_WEAK_DYLIB:
-				attribute = "weak_import";
-				break;
-			case LC_REEXPORT_DYLIB:
-				attribute = "re-export";
-				break;
-			case LC_LOAD_UPWARD_DYLIB:
-				attribute = "upward";
-				break;
-			case LC_LAZY_LOAD_DYLIB:
-				attribute = "lazy_load";
-				break;
-			case LC_LOAD_DYLIB:
-			default:
-				break;
-		}
-		printf(" %-12s   %s\n", attribute, dylib->name());
-	}
-}
-
-template <typename A>
-void DyldInfoPrinter<A>::printDRInfo()
-{
-	if ( fDRInfo == NULL ) {
-		printf("no Designated Requirements info\n");
-	}
-	else {
-		printf("dylibs                 DRs\n");
-		const uint8_t* start = ((uint8_t*)fHeader + fDRInfo->dataoff());
-		//const uint8_t* end   = ((uint8_t*)fHeader + fDRInfo->dataoff() + fDRInfo->datasize());
-		typedef Security::SuperBlob<Security::kSecCodeMagicDRList> DRListSuperBlob;
-		//typedef Security::SuperBlob<Security::kSecCodeMagicRequirementSet> InternalRequirementsSetBlob; // ld64-port: commented
-		const DRListSuperBlob* topBlob = (DRListSuperBlob*)start;
-		if ( topBlob->validateBlob(fDRInfo->datasize()) ) {
-			if ( topBlob->count() == fDylibLoadCommands.size() ) {
-				for(unsigned i=0; i < topBlob->count(); ++i) {
-					printf(" %-20s   ", fDylibs[i]);
-					const Security::BlobCore* item = topBlob->find(i);
-					if ( item != NULL ) {
-						const uint8_t* itemStart = (uint8_t*)item;
-						const uint8_t* itemEnd = itemStart + item->length();
-						for(const uint8_t* p=itemStart; p < itemEnd; ++p)
-							printf("%02X ", *p);
-					}
-					else {
-						printf("no DR info");
-					}
-					printf("\n");
-				}
-			}
-			else {
-				fprintf(stderr, "superblob of DRs has a different number of elements than dylib load commands\n");
-			}
-		}
-		else {
-			fprintf(stderr, "superblob of DRs invalid\n");
-		}
-	}
-}
-
-
-
-
-
-template <typename A>
-void DyldInfoPrinter<A>::printDataInCode()
-{
-	if ( fDataInCode == NULL ) {
-		printf("no data-in-code info\n");
-	}
-	else {
-		printf("offset      length  data-kind\n");
-		const macho_data_in_code_entry<P>* start = (macho_data_in_code_entry<P>*)((uint8_t*)fHeader + fDataInCode->dataoff());
-		const macho_data_in_code_entry<P>* end = (macho_data_in_code_entry<P>*)((uint8_t*)fHeader + fDataInCode->dataoff() + fDataInCode->datasize());
-		for (const macho_data_in_code_entry<P>* p=start; p < end; ++p) {
-			const char* kindStr = "???";
-			switch ( p->kind() ) {
-				case 1:
-					kindStr = "data";
-					break;
-				case 2:
-					kindStr = "jumptable8";
-					break;
-				case 3:
-					kindStr = "jumptable16";
-					break;
-				case 4:
-					kindStr = "jumptable32";
-					break;
-				case 5:
-					kindStr = "jumptable32absolute";
-					break;
-			}
-			printf("0x%08X  0x%04X  %s\n", p->offset(), p->length(), kindStr);
-		}
-	}
-}
-
-
 
 template <>
 ppc::P::uint_t DyldInfoPrinter<ppc>::relocBase()
@@ -1746,7 +1321,6 @@ x86_64::P::uint_t DyldInfoPrinter<x86_64>::relocBase()
 	return fFirstWritableSegment->vmaddr();
 }
 
-#if SUPPORT_ARCH_arm_any
 template <>
 arm::P::uint_t DyldInfoPrinter<arm>::relocBase()
 {
@@ -1755,7 +1329,6 @@ arm::P::uint_t DyldInfoPrinter<arm>::relocBase()
 	else
 		return fFirstSegment->vmaddr();
 }
-#endif
 
 
 template <>
@@ -1763,6 +1336,8 @@ const char*	DyldInfoPrinter<ppc>::relocTypeName(uint8_t r_type)
 {
 	if ( r_type == GENERIC_RELOC_VANILLA )
 		return "pointer";
+	else if ( r_type == PPC_RELOC_PB_LA_PTR )
+		return "pb pointer";
 	else
 		return "??";
 }
@@ -1796,7 +1371,6 @@ const char*	DyldInfoPrinter<x86_64>::relocTypeName(uint8_t r_type)
 		return "??";
 }
 	
-#if SUPPORT_ARCH_arm_any
 template <>
 const char*	DyldInfoPrinter<arm>::relocTypeName(uint8_t r_type)
 {
@@ -1807,7 +1381,7 @@ const char*	DyldInfoPrinter<arm>::relocTypeName(uint8_t r_type)
 	else
 		return "??";
 }
-#endif
+	
 
 template <typename A>
 void DyldInfoPrinter<A>::printRelocRebaseInfo()
@@ -1891,37 +1465,6 @@ void DyldInfoPrinter<A>::printSymbolTableExportInfo()
 	}
 }
 
-template <typename A>
-const char* DyldInfoPrinter<A>::symbolNameForAddress(uint64_t addr)
-{
-	if ( fDynamicSymbolTable != NULL ) {
-		// find exact match in globals
-		const macho_nlist<P>* lastExport = &fSymbols[fDynamicSymbolTable->iextdefsym()+fDynamicSymbolTable->nextdefsym()];
-		for (const macho_nlist<P>* sym = &fSymbols[fDynamicSymbolTable->iextdefsym()]; sym < lastExport; ++sym) {
-			if ( (sym->n_value() == addr) && ((sym->n_type() & N_TYPE) == N_SECT) && ((sym->n_type() & N_STAB) == 0) ) {
-				return &fStrings[sym->n_strx()];
-			}
-		}
-		// find exact match in local symbols
-		const macho_nlist<P>* lastLocal = &fSymbols[fDynamicSymbolTable->ilocalsym()+fDynamicSymbolTable->nlocalsym()];
-		for (const macho_nlist<P>* sym = &fSymbols[fDynamicSymbolTable->ilocalsym()]; sym < lastLocal; ++sym) {
-			if ( (sym->n_value() == addr) && ((sym->n_type() & N_TYPE) == N_SECT) && ((sym->n_type() & N_STAB) == 0) ) {
-				return &fStrings[sym->n_strx()];
-			}
-		}
-	}
-	else {
-		// find exact match in all symbols
-		const macho_nlist<P>* lastSym = &fSymbols[fSymbolCount];
-		for (const macho_nlist<P>* sym = &fSymbols[0]; sym < lastSym; ++sym) {
-			if ( (sym->n_value() == addr) && ((sym->n_type() & N_TYPE) == N_SECT) && ((sym->n_type() & N_STAB) == 0) ) {
-				return &fStrings[sym->n_strx()];
-			}
-		}
-	}
-
-	return "?";
-}
  
 template <typename A>
 void DyldInfoPrinter<A>::printClassicBindingInfo()
@@ -2070,42 +1613,39 @@ static void dump(const char* path)
 				size_t size = OSSwapBigToHostInt32(archs[i].size);
 				cpu_type_t cputype = OSSwapBigToHostInt32(archs[i].cputype);
 				cpu_type_t cpusubtype = OSSwapBigToHostInt32(archs[i].cpusubtype);
-				if ( ((cputype == sPreferredArch) 
-					&& ((sPreferredSubArch==0) || (sPreferredSubArch==cpusubtype)))
-					|| (sPreferredArch == 0) ) {	
+				if ( (cputype == sPreferredArch) 
+					&& ((sPreferredSubArch==0) || (sPreferredSubArch==cpusubtype)) ) {	
 					switch(cputype) {
 					case CPU_TYPE_POWERPC:
 						if ( DyldInfoPrinter<ppc>::validFile(p + offset) )
-							DyldInfoPrinter<ppc>::make(p + offset, size, path, (sPreferredArch == 0));
+							DyldInfoPrinter<ppc>::make(p + offset, size, path);
 						else
 							throw "in universal file, ppc slice does not contain ppc mach-o";
 						break;
 					case CPU_TYPE_I386:
 						if ( DyldInfoPrinter<x86>::validFile(p + offset) )
-							DyldInfoPrinter<x86>::make(p + offset, size, path, (sPreferredArch == 0));
+							DyldInfoPrinter<x86>::make(p + offset, size, path);
 						else
 							throw "in universal file, i386 slice does not contain i386 mach-o";
 						break;
 					case CPU_TYPE_POWERPC64:
 						if ( DyldInfoPrinter<ppc64>::validFile(p + offset) )
-							DyldInfoPrinter<ppc64>::make(p + offset, size, path, (sPreferredArch == 0));
+							DyldInfoPrinter<ppc64>::make(p + offset, size, path);
 						else
 							throw "in universal file, ppc64 slice does not contain ppc64 mach-o";
 						break;
 					case CPU_TYPE_X86_64:
 						if ( DyldInfoPrinter<x86_64>::validFile(p + offset) )
-							DyldInfoPrinter<x86_64>::make(p + offset, size, path, (sPreferredArch == 0));
+							DyldInfoPrinter<x86_64>::make(p + offset, size, path);
 						else
 							throw "in universal file, x86_64 slice does not contain x86_64 mach-o";
 						break;
-#if SUPPORT_ARCH_arm_any
 					case CPU_TYPE_ARM:
-						if ( DyldInfoPrinter<arm>::validFile(p + offset) ) 
-							DyldInfoPrinter<arm>::make(p + offset, size, path, (sPreferredArch == 0));
+						if ( DyldInfoPrinter<arm>::validFile(p + offset) )
+							DyldInfoPrinter<arm>::make(p + offset, size, path);
 						else
 							throw "in universal file, arm slice does not contain arm mach-o";
 						break;
-#endif
 					default:
 							throwf("in universal file, unknown architecture slice 0x%x\n", cputype);
 					}
@@ -2113,22 +1653,20 @@ static void dump(const char* path)
 			}
 		}
 		else if ( DyldInfoPrinter<x86>::validFile(p) ) {
-			DyldInfoPrinter<x86>::make(p, length, path, false);
+			DyldInfoPrinter<x86>::make(p, length, path);
 		}
 		else if ( DyldInfoPrinter<ppc>::validFile(p) ) {
-			DyldInfoPrinter<ppc>::make(p, length, path, false);
+			DyldInfoPrinter<ppc>::make(p, length, path);
 		}
 		else if ( DyldInfoPrinter<ppc64>::validFile(p) ) {
-			DyldInfoPrinter<ppc64>::make(p, length, path, false);
+			DyldInfoPrinter<ppc64>::make(p, length, path);
 		}
 		else if ( DyldInfoPrinter<x86_64>::validFile(p) ) {
-			DyldInfoPrinter<x86_64>::make(p, length, path, false);
+			DyldInfoPrinter<x86_64>::make(p, length, path);
 		}
-#if SUPPORT_ARCH_arm_any
 		else if ( DyldInfoPrinter<arm>::validFile(p) ) {
-			DyldInfoPrinter<arm>::make(p, length, path, false);
+			DyldInfoPrinter<arm>::make(p, length, path);
 		}
-#endif
 		else {
 			throw "not a known file type";
 		}
@@ -2141,17 +1679,13 @@ static void dump(const char* path)
 static void usage()
 {
 	fprintf(stderr, "Usage: dyldinfo [-arch <arch>] <options> <mach-o file>\n"
-			"\t-dylibs           print dependent dylibs\n"
-			"\t-dr               print dependent dylibs and show any recorded DR info\n"
 			"\t-rebase           print addresses dyld will adjust if file not loaded at preferred address\n"
 			"\t-bind             print addresses dyld will set based on symbolic lookups\n"
 			"\t-weak_bind        print symbols which dyld must coalesce\n"
 			"\t-lazy_bind        print addresses dyld will lazily set on first use\n"
 			"\t-export           print addresses of all symbols this file exports\n"
 			"\t-opcodes          print opcodes used to generate the rebase and binding information\n"
-			"\t-function_starts  print table of function start addresses\n"
 			"\t-export_dot       print a GraphViz .dot file of the exported symbols trie\n"
-			"\t-data_in_code     print any data-in-code inforamtion\n"
 		);
 }
 
@@ -2178,21 +1712,26 @@ int main(int argc, const char* argv[])
 						sPreferredArch = CPU_TYPE_I386;
 					else if ( strcmp(arch, "x86_64") == 0 )
 						sPreferredArch = CPU_TYPE_X86_64;
-					else {
-						const char* archName = argv[++i];
-						if ( archName == NULL )
-							throw "-arch missing architecture name";
-						bool found = false;
-						for (const ArchInfo* t=archInfoArray; t->archName != NULL; ++t) {
-							if ( strcmp(t->archName,archName) == 0 ) {
-								sPreferredArch = t->cpuType;
-								if ( t->isSubType )
-									sPreferredSubArch = t->cpuSubType;
-							}
-						}
-						if ( !found )
-							throwf("unknown architecture %s", archName);
+					else if ( strcmp(arch, "arm") == 0 )
+						sPreferredArch = CPU_TYPE_ARM;
+					else if ( strcmp(arch, "armv4t") == 0 ) {
+						sPreferredArch = CPU_TYPE_ARM;
+						sPreferredSubArch = CPU_SUBTYPE_ARM_V4T;
 					}
+					else if ( strcmp(arch, "armv5") == 0 ) {
+						sPreferredArch = CPU_TYPE_ARM;
+						sPreferredSubArch = CPU_SUBTYPE_ARM_V5TEJ;
+					}
+					else if ( strcmp(arch, "armv6") == 0 ) {
+						sPreferredArch = CPU_TYPE_ARM;
+						sPreferredSubArch = CPU_SUBTYPE_ARM_V6;
+					}
+					else if ( strcmp(arch, "armv7") == 0 ) {
+						sPreferredArch = CPU_TYPE_ARM;
+						sPreferredSubArch = CPU_SUBTYPE_ARM_V7;
+					}
+					else 
+						throwf("unknown architecture %s", arch);
 				}
 				else if ( strcmp(arg, "-rebase") == 0 ) {
 					printRebase = true;
@@ -2214,24 +1753,6 @@ int main(int argc, const char* argv[])
 				}
 				else if ( strcmp(arg, "-export_dot") == 0 ) {
 					printExportGraph = true;
-				}
-				else if ( strcmp(arg, "-export_trie_nodes") == 0 ) {
-					printExportNodes = true;
-				}
-				else if ( strcmp(arg, "-shared_region") == 0 ) {
-					printSharedRegion = true;
-				}
-				else if ( strcmp(arg, "-function_starts") == 0 ) {
-					printFunctionStarts = true;
-				}
-				else if ( strcmp(arg, "-dylibs") == 0 ) {
-					printDylibs = true;
-				}
-				else if ( strcmp(arg, "-dr") == 0 ) {
-					printDRs = true;
-				}
-				else if ( strcmp(arg, "-data_in_code") == 0 ) {
-					printDataCode = true;
 				}
 				else {
 					throwf("unknown option: %s\n", arg);

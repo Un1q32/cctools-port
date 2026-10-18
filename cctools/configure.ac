@@ -176,6 +176,11 @@ if test "x$EXTRAFLAGS" != "x"; then
   CXXFLAGS="$CXXFLAGS $EXTRAFLAGS"
 fi
 
+# Parts of cctools rely on tentative definitions (e.g. otool's dis_info) being
+# merged across translation units.  Modern compilers default to -fno-common.
+CFLAGS="$CFLAGS -fcommon"
+OBJCFLAGS="$OBJCFLAGS -fcommon"
+
 if test "xEXTRACXXFLAGS" != "x"; then
   CXXFLAGS="$CXXFLAGS $EXTRACXXFLAGS"
 fi
@@ -200,6 +205,15 @@ AC_PROG_INSTALL
 
 AC_PROG_CC([clang])
 AC_PROG_CXX([clang++])
+
+# Newer autoconf appends the newest C standard it detects (e.g. -std=gnu23)
+# to CC. cctools still contains K&R-style function definitions which were
+# removed from C23, so fall back to a standard that still accepts them.
+case "$CC" in
+  *-std=gnu23*)
+    CC="$CC -std=gnu17"
+  ;;
+esac
 AM_PROG_CC_C_O
 AC_PROG_OBJC([clang])
 AM_PROG_AS([clang])
@@ -340,8 +354,6 @@ AC_CONFIG_FILES([ld64/src/Makefile])
 AC_CONFIG_FILES([ld64/src/3rd/Makefile])
 AC_CONFIG_FILES([ld64/src/3rd/BlocksRuntime/Makefile])
 AC_CONFIG_FILES([ld64/src/ld/Makefile])
-AC_CONFIG_FILES([ld64/src/ld/parsers/Makefile])
-AC_CONFIG_FILES([ld64/src/ld/passes/Makefile])
 AC_CONFIG_FILES([ld64/src/other/Makefile])
 
 AC_OUTPUT
