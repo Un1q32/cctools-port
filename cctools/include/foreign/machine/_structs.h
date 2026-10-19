@@ -25,12 +25,12 @@
  * 
  * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
  */
-#if defined(__APPLE__)
-/* On an Apple host (macOS/iOS) the SDK ships the correct
- * per-architecture definitions, so defer to it. */
-#include_next <machine/_structs.h>
+#if defined (__ppc__) || defined (__ppc64__)
+#include "ppc/_structs.h"
 #elif defined (__i386__) || defined (__x86_64__)
 #include "i386/_structs.h"
+#elif defined (__arm__) || defined (__arm64__)
+#include "arm/_structs.h"
 #else
 #error architecture not supported
 #endif

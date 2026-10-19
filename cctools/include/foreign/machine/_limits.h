@@ -25,14 +25,18 @@
  * 
  * @APPLE_OSREFERENCE_LICENSE_HEADER_END@
  */
-#if defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__) || defined(__APPLE__)
+#if defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
 #include_next <machine/_limits.h>
 #else
 #ifndef _BSD_MACHINE__LIMITS_H_
 #define _BSD_MACHINE__LIMITS_H_
 
-#if defined (__i386__) || defined(__x86_64__)
+#if defined (__ppc__) || defined (__ppc64__)
+#include "ppc/_limits.h"
+#elif defined (__i386__) || defined(__x86_64__)
 #include "i386/_limits.h"
+#elif defined (__arm__) || defined (__arm64__)
+#include "arm/_limits.h"
 #else
 #error architecture not supported
 #endif
