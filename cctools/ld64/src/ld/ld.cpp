@@ -472,6 +472,12 @@ private:
 	std::set<class ObjectFile::Atom*>					fDeadAtoms;
 	std::set<ObjectFile::Atom*>							fLiveAtoms;
 	std::set<ObjectFile::Atom*>							fLiveRootAtoms;
+	// Atoms that dead stripping removed from fAllAtoms but which are still
+	// present in the global symbol table.  LTO can introduce references to
+	// them after the first dead-strip pass (for example an import from a
+	// dylib that no surviving bitcode atom mentioned), so liveness marking
+	// has to be able to bring them back.
+	std::set<ObjectFile::Atom*>							fPrunedAtoms;
 	std::set<const ObjectFile::Atom*>					fInitializerAtoms;
 	std::set<const ObjectFile::Atom*>					fTerminatorAtoms;
 	std::set<const ObjectFile::Atom*>					fRegularDefAtomsThatOverrideADylibsWeakDef;
@@ -1630,6 +1636,14 @@ void Linker::markLive(ObjectFile::Atom& atom, struct Linker::WhyLiveBackChain* p
 				target = fGlobalSymbolTable.find(targetName);
 				if ( target != NULL ) {
 					reference->setTarget(*target, reference->getTargetOffset());
+					// The target may have been pruned from fAllAtoms by an
+					// earlier dead-strip pass yet still be referenced from
+					// atoms that LTO only introduced afterwards.  Dylib
+					// imports in particular must be reinstated so that the
+					// writer emits an undefined symbol for them.
+					if ( (target->getFile()->getInstallPath() != NULL)
+						&& (fPrunedAtoms.erase(target) != 0) )
+						fAllAtoms.push_back(target);
 				}
 				else {
 					// mark as undefined, for later error processing
@@ -1661,6 +1675,9 @@ void Linker::markLive(ObjectFile::Atom& atom, struct Linker::WhyLiveBackChain* p
 				target = fGlobalSymbolTable.find(targetName);
 				if ( target != NULL ) {
 					reference->setFromTarget(*target);
+					if ( (target->getFile()->getInstallPath() != NULL)
+						&& (fPrunedAtoms.erase(target) != 0) )
+						fAllAtoms.push_back(target);
 				}
 				else {
 					// mark as undefined, for later error processing
@@ -1790,6 +1807,9 @@ void Linker::deadStripResolve()
 				if ( target != NULL ) {
 					reference->setTarget(*target, reference->getTargetOffset());
 					fLiveAtoms.insert(target);
+					if ( (target->getFile()->getInstallPath() != NULL)
+						&& (fPrunedAtoms.erase(target) != 0) )
+						fAllAtoms.push_back(target);
 					// by just adding this atom to fLiveAtoms set, we are assuming it has no
 					// references, which is true for commons.
 					if ( target->getDefinitionKind() != ObjectFile::Atom::kTentativeDefinition )
@@ -1801,6 +1821,9 @@ void Linker::deadStripResolve()
 				if ( target != NULL ) {
 					reference->setFromTarget(*target);
 					fLiveAtoms.insert(target);
+					if ( (target->getFile()->getInstallPath() != NULL)
+						&& (fPrunedAtoms.erase(target) != 0) )
+						fAllAtoms.push_back(target);
 					// by just adding this atom to fLiveAtoms set, we are assuming it has no
 					// references, which is true for commons.
 					if ( target->getDefinitionKind() != ObjectFile::Atom::kTentativeDefinition )
@@ -1851,7 +1874,15 @@ void Linker::deadStripResolve()
 	}
 	
 	// now remove all non-live atoms from fAllAtoms
-	fAllAtoms.erase(std::remove_if(fAllAtoms.begin(), fAllAtoms.end(), NotLive(fLiveAtoms)), fAllAtoms.end());
+	for (std::vector<ObjectFile::Atom*>::iterator it = fAllAtoms.begin(); it != fAllAtoms.end(); ) {
+		if ( fLiveAtoms.count(*it) == 0 ) {
+			fPrunedAtoms.insert(*it);
+			it = fAllAtoms.erase(it);
+		}
+		else {
+			++it;
+		}
+	}
 }
 
 void Linker::checkObjC()
