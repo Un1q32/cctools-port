@@ -415,7 +415,17 @@ const char* Reader::tripletPrefixForArch(cpu_type_t arch)
 
 bool Reader::validFile(const uint8_t* fileContent, uint64_t fileLength, cpu_type_t architecture)
 {
-	return ::lto_module_is_object_file_in_memory_for_target(fileContent, fileLength, tripletPrefixForArch(architecture));
+	if ( ::lto_module_is_object_file_in_memory_for_target(fileContent, fileLength, tripletPrefixForArch(architecture)) )
+		return true;
+	// LLVM canonicalizes the "powerpc"/"powerpc64" architecture names to
+	// "ppc"/"ppc64" in target triples, so accept those spellings as well.
+	switch (architecture) {
+		case CPU_TYPE_POWERPC:
+			return ::lto_module_is_object_file_in_memory_for_target(fileContent, fileLength, "ppc-");
+		case CPU_TYPE_POWERPC64:
+			return ::lto_module_is_object_file_in_memory_for_target(fileContent, fileLength, "ppc64-");
+	}
+	return false;
 }
 
 const char* Reader::fileKind(const uint8_t* p)

@@ -761,7 +761,15 @@ void Linker::optimize()
 				this->addJustInTimeAtoms(targetName, true, true, true);
 			}
 		}
-		
+
+		// The library atoms loaded just above may themselves reference symbols
+		// that were not undefined before LTO ran.  For example a member of
+		// libclang_rt.osx.a pulled in for __atomic_load_8 references _memcpy and
+		// OSSpinLockLock.  Iterate undefine resolution until it reaches a fixed
+		// point, otherwise those symbols are never looked up in any library and
+		// the link fails with "Undefined symbols".
+		this->loadUndefines();
+
 		if ( fOptions.deadStrip() != Options::kDeadStripOff ) {
 			// LTO may optimize away some atoms, so dead stripping must be redone
 			fLiveAtoms.clear();
