@@ -511,14 +511,11 @@ unsigned short mode)
 {
     struct mach_header *mh;
     struct mach_header_64 *mh64;
-    struct load_command *lc;
     uint32_t i, size, headers_size;
-    enum byte_sex host_byte_sex;
     size_t pathlen, tmpsize;
     char* tmppath;
     const char* prefix = ".XXXXXX";
 
-    host_byte_sex = get_host_byte_sex();
     mh = NULL;
     mh64 = NULL;
 
@@ -527,30 +524,18 @@ unsigned short mode)
 	if(archs[i].object->mh != NULL){
 	    mh = archs[i].object->mh;
 	    headers_size = sizeof(*mh) + mh->sizeofcmds;
-	    lc = (struct load_command *)
-	    archs[i].object->object_addr + sizeof(mh);
 	}
 	else{
 	    mh64 = archs[i].object->mh64;
 	    headers_size = sizeof(*mh64) + mh64->sizeofcmds;
-	    lc = (struct load_command *)
-	    archs[i].object->object_addr + sizeof(mh64);
 	}
 
 	/*
-	 * Swap the mach header and load commands, and prepare to write them
-	 * back out to disk.
+	 * The mach header and load commands are left in host byte sex here.
+	 * writeout() below swaps them into the object's byte sex while it
+	 * writes the file out, so swapping them here as well would result in
+	 * a double swap for cross-endian objects (e.g. PowerPC).
 	 */
-	if(archs[i].object->object_byte_sex != host_byte_sex) {
-	    if (mh) {
-		if(swap_object_headers(mh, lc) == FALSE)
-		    fatal("internal error: swap_object_headers() failed");
-	    }
-	    else {
-		if(swap_object_headers(mh64, lc) == FALSE)
-		    fatal("internal error: swap_object_headers() failed");
-	    }
-	}
 
 	/*
 	 * Zero out the unused space between our load commands and the start of

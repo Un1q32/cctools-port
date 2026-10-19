@@ -22,6 +22,7 @@
  */
 #include <mach/machine-cctools.h>
 #include <mach-o/reloc.h>
+#include <mach-o/ppc/reloc.h>
 #include <mach-o/x86_64/reloc.h>
 #include <mach-o/arm/reloc.h>
 #include "stuff/bool.h"
@@ -48,6 +49,11 @@ cpu_type_t cputype)
 		 * fatal error below.
 		 */
 		break;
+	case CPU_TYPE_POWERPC:
+	case CPU_TYPE_POWERPC64:
+	case CPU_TYPE_VEO:
+	    return(PPC_RELOC_PAIR);
+	    break;
 	case CPU_TYPE_ARM:
 	    return(ARM_RELOC_PAIR);
 	    break;
@@ -85,6 +91,22 @@ uint32_t r_type)
 	case CPU_TYPE_X86_64:
 		return(FALSE);
 		break;
+	case CPU_TYPE_POWERPC:
+	case CPU_TYPE_POWERPC64:
+	case CPU_TYPE_VEO:
+	    if(r_type == PPC_RELOC_HI16 ||
+	       r_type == PPC_RELOC_LO16 ||
+	       r_type == PPC_RELOC_HA16 ||
+	       r_type == PPC_RELOC_LO14 ||
+	       r_type == PPC_RELOC_SECTDIFF ||
+	       r_type == PPC_RELOC_LOCAL_SECTDIFF ||
+	       r_type == PPC_RELOC_HI16_SECTDIFF ||
+	       r_type == PPC_RELOC_LO16_SECTDIFF ||
+	       r_type == PPC_RELOC_LO14_SECTDIFF ||
+	       r_type == PPC_RELOC_HA16_SECTDIFF ||
+	       r_type == PPC_RELOC_JBSR)
+		return(TRUE);
+	    break;
 	case CPU_TYPE_ARM:
 	    if(r_type == ARM_RELOC_SECTDIFF ||
 	       r_type == ARM_RELOC_LOCAL_SECTDIFF ||
@@ -125,6 +147,16 @@ uint32_t r_type)
 		/* No sectdiff relocs for x86-64. */
 		return(FALSE);
 		break;
+	case CPU_TYPE_POWERPC:
+	case CPU_TYPE_VEO:
+	    if(r_type == PPC_RELOC_SECTDIFF ||
+	       r_type == PPC_RELOC_LOCAL_SECTDIFF ||
+	       r_type == PPC_RELOC_HI16_SECTDIFF ||
+	       r_type == PPC_RELOC_LO16_SECTDIFF ||
+	       r_type == PPC_RELOC_LO14_SECTDIFF ||
+	       r_type == PPC_RELOC_HA16_SECTDIFF)
+		return(TRUE);
+	    break;
 	case CPU_TYPE_ARM:
 	    if(r_type == ARM_RELOC_SECTDIFF ||
 	       r_type == ARM_RELOC_LOCAL_SECTDIFF ||

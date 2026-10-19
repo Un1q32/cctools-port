@@ -1538,7 +1538,7 @@ void *cookie) /* cookie is not used */
 	    if(symbols != NULL){
 		if((uintptr_t)symbols % sizeof(uint32_t) ||
 		   ofile->object_byte_sex != get_host_byte_sex()){
-           if ((char*)(symbols + (nsymbols * sizeof(struct nlist)))
+           if ((char *)(symbols + nsymbols)
 					   > ofile->file_addr + ofile->file_size){
                printf("symbol table extends beyond the end of the file\n");
 			   return;
