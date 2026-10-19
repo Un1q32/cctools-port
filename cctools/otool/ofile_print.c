@@ -221,6 +221,7 @@
 #include <mach-o/fat.h>
 #include <mach-o/loader.h>
 #include <mach-o/reloc.h>
+#include <mach-o/ppc/reloc.h>
 #include <mach-o/arm/reloc.h>
 #include <mach-o/arm64/reloc.h>
 #include "stuff/symbol.h"
@@ -7286,6 +7287,10 @@ enum bool verbose)
 		if(verbose){
 		    if((cputype == CPU_TYPE_I386 &&
 			sr->r_type == GENERIC_RELOC_PAIR) ||
+		       ((cputype == CPU_TYPE_POWERPC ||
+		         cputype == CPU_TYPE_POWERPC64 ||
+		         cputype == CPU_TYPE_VEO) &&
+			sr->r_type == PPC_RELOC_PAIR) ||
 		       (cputype == CPU_TYPE_ARM &&
 			sr->r_type == ARM_RELOC_PAIR))
 			    printf("         ");
@@ -7326,7 +7331,19 @@ enum bool verbose)
 			     * for static branch prediction was predicted in
 			     * the assembly source.
 			     */
-                            printf("?(%2d)  ", sr->r_length);
+			    if((cputype == CPU_TYPE_POWERPC64 && 
+				reloc.r_type == PPC_RELOC_VANILLA) ||
+			       cputype == CPU_TYPE_X86_64) {
+				    printf("quad   ");
+			    }
+			    else if(cputype == CPU_TYPE_POWERPC ||
+				    cputype == CPU_TYPE_POWERPC64 || 
+				    cputype == CPU_TYPE_VEO){
+				printf("long   ");
+				predicted = TRUE;
+			    }
+			    else
+				printf("?(%2d)  ", sr->r_length);
 			    break;
 			default:
 			    printf("?(%2d)  ", sr->r_length);
@@ -7341,6 +7358,27 @@ enum bool verbose)
 			    sr->r_type == ARM_RELOC_PAIR))
 			    printf(" half = 0x%04x ",
 				   (unsigned int)sr->r_address);
+			else if(((cputype == CPU_TYPE_POWERPC ||
+				  cputype == CPU_TYPE_POWERPC64 ||
+				  cputype == CPU_TYPE_VEO) &&
+				 sr->r_type == PPC_RELOC_PAIR)){
+			    if(previous_ppc_jbsr == FALSE)
+				printf(" half = 0x%04x ",
+				       (unsigned int)reloc.r_address);
+			    else{
+				printf(" <- other_part ");
+			    }
+			}
+		    }
+		    else if((cputype == CPU_TYPE_POWERPC ||
+			     cputype == CPU_TYPE_POWERPC64 ||
+			     cputype == CPU_TYPE_VEO) &&
+			    (sectdiff_r_type == PPC_RELOC_HI16_SECTDIFF ||
+			     sectdiff_r_type == PPC_RELOC_LO16_SECTDIFF ||
+			     sectdiff_r_type == PPC_RELOC_LO14_SECTDIFF ||
+			     sectdiff_r_type == PPC_RELOC_HA16_SECTDIFF)){
+			    printf(" other_half = 0x%04x ",
+				   (unsigned int)sr->r_address);
 		    }
 		    else if(cputype == CPU_TYPE_ARM &&
 			    sectdiff_r_type == ARM_RELOC_HALF_SECTDIFF){
@@ -7350,6 +7388,15 @@ enum bool verbose)
 		    if((cputype == CPU_TYPE_I386 &&
 			(sr->r_type == GENERIC_RELOC_SECTDIFF ||
 			 sr->r_type == GENERIC_RELOC_LOCAL_SECTDIFF)) ||
+		       ((cputype == CPU_TYPE_POWERPC ||
+		         cputype == CPU_TYPE_POWERPC64 ||
+		         cputype == CPU_TYPE_VEO) &&
+			(sr->r_type == PPC_RELOC_SECTDIFF ||
+			 sr->r_type == PPC_RELOC_LOCAL_SECTDIFF ||
+			 sr->r_type == PPC_RELOC_HI16_SECTDIFF ||
+			 sr->r_type == PPC_RELOC_LO16_SECTDIFF ||
+			 sr->r_type == PPC_RELOC_LO14_SECTDIFF ||
+			 sr->r_type == PPC_RELOC_HA16_SECTDIFF)) ||
 		       (cputype == CPU_TYPE_ARM &&
 			(sr->r_type == ARM_RELOC_SECTDIFF ||
 			 sr->r_type == ARM_RELOC_LOCAL_SECTDIFF ||
@@ -7359,7 +7406,13 @@ enum bool verbose)
 		    }
 		    else
 			previous_sectdiff = FALSE;
-                    previous_ppc_jbsr = FALSE;
+		    if(((cputype == CPU_TYPE_POWERPC ||
+		         cputype == CPU_TYPE_POWERPC64 ||
+		         cputype == CPU_TYPE_VEO) &&
+			 sr->r_type == PPC_RELOC_JBSR))
+			previous_ppc_jbsr = TRUE;
+		    else
+			previous_ppc_jbsr = FALSE;
 		    if(cputype == CPU_TYPE_ARM &&
 		       (sr->r_type == ARM_RELOC_HALF ||
 		        sr->r_type == ARM_RELOC_HALF_SECTDIFF))
@@ -7377,7 +7430,11 @@ enum bool verbose)
 	    }
 	    else{
 		if(verbose){
-		    if((cputype == CPU_TYPE_ARM &&
+		    if(((cputype == CPU_TYPE_POWERPC ||
+		         cputype == CPU_TYPE_POWERPC64 ||
+		         cputype == CPU_TYPE_VEO) &&
+			reloc.r_type == PPC_RELOC_PAIR) ||
+		       (cputype == CPU_TYPE_ARM &&
 			reloc.r_type == ARM_RELOC_PAIR))
 			    printf("         ");
 		    else
@@ -7417,7 +7474,20 @@ enum bool verbose)
 			     * for static branch prediction was predicted in
 			     * the assembly source.
 			     */
-                            printf("?(%2d)  ", reloc.r_length);
+			    if((cputype == CPU_TYPE_POWERPC64 && 
+				reloc.r_type == PPC_RELOC_VANILLA) ||
+			       cputype == CPU_TYPE_ARM64 ||
+			       cputype == CPU_TYPE_X86_64) {
+				    printf("quad   ");
+			    }
+			   else if(cputype == CPU_TYPE_POWERPC ||
+				    cputype == CPU_TYPE_POWERPC64 ||
+			            cputype == CPU_TYPE_VEO){
+				printf("long   ");
+				predicted = TRUE;
+			    }
+			    else
+				printf("?(%2d)  ", reloc.r_length);
 			    break;
 			default:
 			    printf("?(%2d)  ", reloc.r_length);
@@ -7457,6 +7527,17 @@ enum bool verbose)
 				reloc.r_type == ARM64_RELOC_ADDEND)
 			    printf("addend = 0x%06x\n",
 				   (unsigned int)reloc.r_symbolnum);
+			else if(((cputype == CPU_TYPE_POWERPC ||
+				  cputype == CPU_TYPE_POWERPC64 ||
+				  cputype == CPU_TYPE_VEO) &&
+				 reloc.r_type == PPC_RELOC_PAIR)){
+			    if(previous_ppc_jbsr == FALSE)
+				printf("half = 0x%04x\n",
+				       (unsigned int)reloc.r_address);
+			    else
+				printf("other_part = 0x%08x\n",
+				       (unsigned int)reloc.r_address);
+			}
 			else{
 			    printf("%d ", reloc.r_symbolnum);
 			    if(reloc.r_symbolnum > nsects ||
@@ -7477,7 +7558,13 @@ enum bool verbose)
 			    }
 			}
 		    }
-                    previous_ppc_jbsr = FALSE;
+		    if(((cputype == CPU_TYPE_POWERPC ||
+		         cputype == CPU_TYPE_POWERPC64 ||
+		         cputype == CPU_TYPE_VEO) &&
+			 reloc.r_type == PPC_RELOC_JBSR))
+			previous_ppc_jbsr = TRUE;
+		    else
+			previous_ppc_jbsr = FALSE;
 		    if(cputype == CPU_TYPE_ARM &&
 		       (reloc.r_type == ARM_RELOC_HALF ||
 		        reloc.r_type == ARM_RELOC_HALF_SECTDIFF))
@@ -7505,6 +7592,11 @@ static char *x86_64_r_types[] = {
     "UNSIGND ", "SIGNED  ", "BRANCH  ", "GOT_LD  ", "GOT     ", "SUB     ",
     "SIGNED1 ", "SIGNED2 ", "SIGNED4 ", "TLV     ", " 10 (?) ", " 11 (?) ",
     " 12 (?) ", " 13 (?) ", " 14 (?) ", " 15 (?) "
+};
+static char *ppc_r_types[] = {
+    "VANILLA ", "PAIR    ", "BR14",     "BR24    ", "HI16    ", "LO16    ",
+    "HA16    ", "LO14    ", "SECTDIF ", "PBLAPTR ", "HI16DIF ", "LO16DIF ",
+    "HA16DIF ", "JBSR    ", "LO14DIF ", "LOCSDIF "
 };
 
 static char *arm_r_types[] = {
@@ -7541,6 +7633,17 @@ enum bool predicted)
 	case CPU_TYPE_X86_64:
 		printf("%s", x86_64_r_types[r_type]);
 		break;
+	case CPU_TYPE_POWERPC:
+	case CPU_TYPE_POWERPC64:
+	case CPU_TYPE_VEO:
+	    printf("%s", ppc_r_types[r_type]);
+	    if(r_type == PPC_RELOC_BR14){
+		if(predicted == TRUE)
+		    printf("+/- ");
+		else
+		    printf("    ");
+	    }
+	    break;
 	case CPU_TYPE_ARM:
 	    printf("%s", arm_r_types[r_type]);
 	    break;
