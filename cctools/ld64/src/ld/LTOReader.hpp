@@ -230,6 +230,7 @@ public:
 	void 										setScope(Scope s) 			{ }
 
 	void 										addReference(const char* targetName);
+	void 										clearReferences() 			{ fReferences.clear(); }
 	
 private:
 	class Reader&								fOwner;
@@ -275,6 +276,10 @@ public:
 	virtual											~Reader();
 	
 	virtual std::vector<class ObjectFile::Atom*>&	getAtoms()				{ return (std::vector<class ObjectFile::Atom*>&)(fAtoms); }
+	// All bitcode readers created so far.  The linker uses this to resolve the
+	// references which are internal to the bitcode (and therefore invisible in
+	// the atom graph) before it runs the LTO code generator.
+	static const std::set<Reader*>&					getReaders()			{ return fgReaders; }
 	virtual std::vector<class ObjectFile::Atom*>*	getJustInTimeAtomsFor(const char* name) { return NULL; }
 	virtual const char*								getPath()				{ return fPath; }
 	virtual time_t									getModificationTime()	{ return fModTime; }
@@ -301,6 +306,7 @@ private:
 	typedef __gnu_cxx::hash_map<const char*, Atom*, __gnu_cxx::hash<const char*>, CStringEquals> CStringToAtom;
 	
 	ObjectFile::Reader*								makeMachOReader(const uint8_t* p, size_t len, uint32_t nextInputOrdinal);
+	static void										appendMachOBuffer(const void* buffer, size_t size, void* context);
 	static const char*								tripletPrefixForArch(cpu_type_t);
 
 	cpu_type_t										fArchitecture;
@@ -377,6 +383,7 @@ Reader::Reader(const uint8_t* fileContent, uint64_t fileLength, const char* path
 					scope = ObjectFile::Atom::scopeLinkageUnit;
 					break;
 				case LTO_SYMBOL_SCOPE_DEFAULT:
+				case LTO_SYMBOL_SCOPE_DEFAULT_CAN_BE_HIDDEN:
 					scope = ObjectFile::Atom::scopeGlobal;
 					break;
 				default:
@@ -447,6 +454,17 @@ const char* Reader::fileKind(const uint8_t* p)
 	return NULL;
 }
 
+void Reader::appendMachOBuffer(const void* buffer, size_t size, void* context)
+{
+	std::vector<std::pair<uint8_t*, size_t> >* buffers =
+			(std::vector<std::pair<uint8_t*, size_t> >*)context;
+	uint8_t* copy = (uint8_t*)::malloc(size);
+	if ( copy == NULL )
+		throwf("out of memory copying LTO output");
+	::memcpy(copy, buffer, size);
+	buffers->push_back(std::make_pair(copy, size));
+}
+
 bool Reader::optimize(const std::vector<ObjectFile::Atom *>& allAtoms, std::vector<ObjectFile::Atom*>& newAtoms, 
 							std::vector<const char*>& additionalUndefines, const std::set<ObjectFile::Atom*>& deadAtoms,
 							std::vector<ObjectFile::Atom*>& newlyDeadAtoms,
@@ -485,6 +503,7 @@ bool Reader::optimize(const std::vector<ObjectFile::Atom *>& allAtoms, std::vect
 	// external (i.e. not originated from same .o file) reference if all originating atoms are also 
 	// defined in llvm bitcode file.
 	CStringSet nonLLVMRefs;
+	CStringSet nonLLVMDefs;	// names of live definitions provided by non-bitcode atoms
 	CStringToAtom llvmAtoms;
     bool hasNonllvmAtoms = false;
 	for (std::vector<ObjectFile::Atom*>::const_iterator it = allAtoms.begin(); it != allAtoms.end(); ++it) {
@@ -492,8 +511,12 @@ bool Reader::optimize(const std::vector<ObjectFile::Atom *>& allAtoms, std::vect
 		// only look at references come from an atom that is not an llvm atom
 		if ( fgReaders.count((Reader*)(atom->getFile())) == 0 ) {
 				// remember if we've seen any atoms not from an llvm reader and not from the writer
-				if ( atom->getFile() != writer )
+				if ( atom->getFile() != writer ) {
 					hasNonllvmAtoms = true;
+					const char* defName = atom->getName();
+					if ( (defName != NULL) && (deadAtoms.count(atom) == 0) )
+						nonLLVMDefs.insert(defName);
+				}
 				std::vector<ObjectFile::Reference*>& refs = atom->getReferences();
 				for (std::vector<ObjectFile::Reference*>::iterator ri=refs.begin(), re=refs.end(); ri != re; ++ri) {
 					ObjectFile::Reference* ref = *ri;
@@ -505,8 +528,15 @@ bool Reader::optimize(const std::vector<ObjectFile::Atom *>& allAtoms, std::vect
 		}
 		else {
 			const char* name = atom->getName();
-			if ( name != NULL )
+			// Ignore atoms the linker has already coalesced away (e.g. a
+			// losing weak definition).  fAllAtoms still contains them at this
+			// point, but only the surviving definition will be present in the
+			// generated Mach-O file; keeping the loser in this map would map
+			// the generated atom to the dead proxy and leave the live one
+			// without a real atom.
+			if ( (name != NULL) && (deadAtoms.count(atom) == 0) ) {
 				llvmAtoms[name] = (Atom*)atom;
+			}
 		}
 	}
 	// if entry  point is in a llvm bitcode file, it must be preserved by LTO
@@ -609,31 +639,59 @@ bool Reader::optimize(const std::vector<ObjectFile::Atom *>& allAtoms, std::vect
 	// run code generator
 	size_t machOFileLen = 0;
 	const uint8_t* machOFile = NULL;
-#if LTO_API_VERSION >= 12
-	if ( ::lto_api_version() >= 12 ) {
-		// newer libLTO: lto_codegen_compile() is deprecated in favour of
-		// running the optimizer and then compiling the optimized module
+	std::vector<std::pair<uint8_t*, size_t> > machOFiles;
+
+	// Darwin PowerPC branch relocations only carry a 24 bit displacement, so a
+	// single object file cannot describe more than 32MB of text.  Large LTO
+	// links (such as libLLVM itself) need the code generator to emit several
+	// object files which the linker can then connect with branch islands.
+#if LTO_API_VERSION >= 31
+	if ( (fArchitecture == CPU_TYPE_POWERPC || fArchitecture == CPU_TYPE_POWERPC64)
+			&& ::lto_api_version() >= 31 ) {
 		if ( ::lto_codegen_optimize(generator) )
 			throwf("could not do LTO optimization: %s", ::lto_get_error_message());
-		machOFile = (const uint8_t*)::lto_codegen_compile_optimized(generator, &machOFileLen);
+		if ( ::lto_codegen_compile_optimized_parallel(generator, 4, Reader::appendMachOBuffer, &machOFiles) )
+			throwf("could not do LTO codegen: %s", ::lto_get_error_message());
+		if ( machOFiles.empty() )
+			throwf("could not do LTO codegen: no output");
 	}
 	else
 #endif
 	{
-		machOFile = (const uint8_t*)::lto_codegen_compile(generator, &machOFileLen);
+#if LTO_API_VERSION >= 12
+		if ( ::lto_api_version() >= 12 ) {
+			// newer libLTO: lto_codegen_compile() is deprecated in favour of
+			// running the optimizer and then compiling the optimized module
+			if ( ::lto_codegen_optimize(generator) )
+				throwf("could not do LTO optimization: %s", ::lto_get_error_message());
+			machOFile = (const uint8_t*)::lto_codegen_compile_optimized(generator, &machOFileLen);
+		}
+		else
+#endif
+		{
+			machOFile = (const uint8_t*)::lto_codegen_compile(generator, &machOFileLen);
+		}
+		if ( machOFile == NULL || machOFileLen == 0 )
+			throwf("could not do LTO codegen: %s", ::lto_get_error_message());
+		machOFiles.push_back(std::make_pair((uint8_t*)machOFile, machOFileLen));
 	}
-	if ( machOFile == NULL ) 
-		throwf("could not do LTO codegen: %s", ::lto_get_error_message());
-	
-    // if requested, save off temp mach-o file
+
+    // if requested, save off temp mach-o file(s)
     if ( saveTemps ) {
-        char tempMachoPath[MAXPATHLEN];
-        strcpy(tempMachoPath, outputFilePath);
-        strcat(tempMachoPath, ".lto.o");
-        int fd = ::open(tempMachoPath, O_CREAT | O_WRONLY | O_TRUNC, 0666);
-		if ( fd != -1) {
-			::write(fd, machOFile, machOFileLen);
-			::close(fd);
+		for (size_t i = 0; i < machOFiles.size(); ++i) {
+			char tempMachoPath[MAXPATHLEN];
+			strcpy(tempMachoPath, outputFilePath);
+			strcat(tempMachoPath, ".lto.o");
+			if ( machOFiles.size() > 1 ) {
+				char suffix[32];
+				snprintf(suffix, sizeof(suffix), ".%zu", i);
+				strcat(tempMachoPath, suffix);
+			}
+			int fd = ::open(tempMachoPath, O_CREAT | O_WRONLY | O_TRUNC, 0666);
+			if ( fd != -1) {
+				::write(fd, machOFiles[i].first, machOFiles[i].second);
+				::close(fd);
+			}
 		}
 		//	save off merged bitcode file
 		char tempOptBitcodePath[MAXPATHLEN];
@@ -642,10 +700,13 @@ bool Reader::optimize(const std::vector<ObjectFile::Atom *>& allAtoms, std::vect
         ::lto_codegen_write_merged_modules(generator, tempOptBitcodePath);
 	}
 
-	// parse generated mach-o file into a MachOReader
-	ObjectFile::Reader* machoReader = this->makeMachOReader(machOFile, machOFileLen, nextInputOrdinal);
-	
-	// sync generated mach-o atoms with existing atoms ld knows about
+	// parse generated mach-o files into MachOReaders and sync generated
+	// mach-o atoms with existing atoms ld knows about
+	for (size_t fileIndex = 0; fileIndex < machOFiles.size(); ++fileIndex) {
+	ObjectFile::Reader* machoReader = this->makeMachOReader(machOFiles[fileIndex].first, machOFiles[fileIndex].second,
+																nextInputOrdinal + (uint32_t)fileIndex);
+	if ( machoReader == NULL )
+		throwf("LTO generated file is not a valid object for this architecture");
 	std::vector<ObjectFile::Atom*> machoAtoms = machoReader->getAtoms();
 	for (std::vector<ObjectFile::Atom *>::iterator it = machoAtoms.begin(); it != machoAtoms.end(); ++it) {
 		ObjectFile::Atom* atom = *it;
@@ -669,6 +730,12 @@ bool Reader::optimize(const std::vector<ObjectFile::Atom *>& allAtoms, std::vect
 							deadllvmAtoms[targ->getName()] = (Atom*)atom;
 						}
 					}
+					// The linker only coalesced this atom against another bitcode
+					// atom.  If that atom did not survive dead stripping, the
+					// symbol table still holds a dead proxy for this name; use
+					// the real definition from the generated file instead.
+					if ( nonLLVMDefs.find(name) == nonLLVMDefs.end() )
+						newAtoms.push_back(atom);
 				}
 				else
 				{
@@ -707,9 +774,19 @@ bool Reader::optimize(const std::vector<ObjectFile::Atom *>& allAtoms, std::vect
 			}
 		}
 	}
+	}
 		
-	// Remove InternalAtoms from ld
+	// The InternalAtom references were only needed to resolve the bitcode
+	// file's undefined symbols while ld was building its initial symbol
+	// table.  The LTO code generator has now resolved those references
+	// itself; the generated Mach-O file carries the real reference graph, so
+	// the InternalAtoms are dropped below.  Clear their stale references
+	// first: the dead stripping that follows LTO walks atom references and
+	// would otherwise try to resolve bitcode-level undefines against a
+	// symbol table in which libLTO may have (correctly) internalized the
+	// matching definitions, producing spurious "Undefined symbols" errors.
 	for (std::set<Reader*>::iterator it=fgReaders.begin(); it != fgReaders.end(); ++it) {
+		(*it)->fInternalAtom.clearReferences();
 		newlyDeadAtoms.push_back(&((*it)->fInternalAtom));
 	}
 	// Remove Atoms from ld if code generator optimized them away

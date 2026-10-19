@@ -344,6 +344,7 @@ private:
 	void				markDead(ObjectFile::Atom* atom);
 	void				updateConstraints(ObjectFile::Reader* reader);
 	void				loadAndResolve();
+	void				preloadLTOUndefines();
 	void				processDTrace();
 	void				checkObjC();
 	void				addSynthesizedAtoms();
@@ -838,6 +839,7 @@ void Linker::adjustScope()
 void Linker::link()
 {
 	this->buildAtomList();
+	this->preloadLTOUndefines();
 	this->loadAndResolve();
 	this->optimize();
 	this->adjustScope();
@@ -1129,6 +1131,70 @@ static const char* pathLeafName(const char* path)
 		return path;
 	else
 		return &shortPath[1];
+}
+
+
+void Linker::preloadLTOUndefines()
+{
+	// libLTO knows about every undefined reference inside a bitcode file, but
+	// the atom graph ld64 builds does not: it only exposes the references of
+	// atoms that survive dead stripping.  An archive member whose bitcode
+	// defines a symbol referenced from another bitcode file therefore might
+	// not be pulled in until after the LTO code generator has run, at which
+	// point its bitcode can never be compiled.  Resolve the references of all
+	// bitcode readers up front, so that everything which will participate in
+	// the LTO is loaded before dead stripping and code generation.
+	if ( lto::Reader::getReaders().empty() )
+		return;
+
+	std::set<std::string> lookedUp;
+	bool loadedMember = true;
+	while ( loadedMember ) {
+		loadedMember = false;
+		// addJustInTimeAtoms() may create additional bitcode readers, so
+		// iterate over a copy of the current set.
+		std::vector<lto::Reader*> readers(lto::Reader::getReaders().begin(), lto::Reader::getReaders().end());
+		for (std::vector<lto::Reader*>::iterator rit = readers.begin(); rit != readers.end(); ++rit) {
+			std::vector<class ObjectFile::Atom*>& atoms = (*rit)->getAtoms();
+			for (std::vector<class ObjectFile::Atom*>::iterator ait = atoms.begin(); ait != atoms.end(); ++ait) {
+				std::vector<class ObjectFile::Reference*>& references = (*ait)->getReferences();
+				for (std::vector<class ObjectFile::Reference*>::iterator it = references.begin(); it != references.end(); ++it) {
+					ObjectFile::Reference* reference = *it;
+					if ( reference->getTargetBinding() != ObjectFile::Reference::kUnboundByName )
+						continue;
+					const char* name = reference->getTargetName();
+					if ( (name == NULL) || (fGlobalSymbolTable.find(name) != NULL) )
+						continue;
+					if ( ! lookedUp.insert(name).second )
+						continue;
+					fGlobalSymbolTable.require(name);
+					std::vector<class ObjectFile::Atom*>* newAtoms = this->addJustInTimeAtoms(name, true, true, true);
+					if ( newAtoms != NULL ) {
+						loadedMember = true;
+						delete newAtoms;
+					}
+				}
+			}
+		}
+	}
+
+	// The LTO code generator runs before ld64 dead strips for the second
+	// time.  It decides which symbols to internalize (make local) from the
+	// atom references ld64 can see at that point; references that only exist
+	// inside the bitcode are invisible to us.  After code generation the
+	// merged Mach-O file does contain those references, and dead stripping
+	// walks them, so a definition that libLTO internalized can no longer be
+	// resolved from the symbol table.  Keep every global atom defined by a
+	// bitcode reader live instead: libLTO then keeps all of them external,
+	// and each one is mapped to its real atom in the generated file.
+	const std::set<lto::Reader*>& readers = lto::Reader::getReaders();
+	for (std::set<lto::Reader*>::const_iterator rit = readers.begin(); rit != readers.end(); ++rit) {
+		std::vector<class ObjectFile::Atom*>& atoms = (*rit)->getAtoms();
+		for (std::vector<class ObjectFile::Atom*>::iterator ait = atoms.begin(); ait != atoms.end(); ++ait) {
+			if ( ((*ait)->getScope() == ObjectFile::Atom::scopeGlobal) && (fDeadAtoms.count(*ait) == 0) )
+				fLiveRootAtoms.insert(*ait);
+		}
+	}
 }
 
 
