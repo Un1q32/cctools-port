@@ -8,6 +8,7 @@ AM_CXXFLAGS = \
 	-D__DARWIN_UNIX03 \
 	$(WARNINGS) \
 	-Wno-switch \
+	$(LTO_DEF) \
 	$(ENDIAN_FLAG) \
 	-I$(top_srcdir)/include \
 	-I$(top_srcdir)/include/foreign \
@@ -20,6 +21,7 @@ AM_CXXFLAGS = \
 AM_CFLAGS = \
 	-D__DARWIN_UNIX03 \
 	$(WARNINGS) \
+	$(LTO_DEF) \
 	$(ENDIAN_FLAG) \
 	-I$(top_srcdir)/include \
 	-I$(top_srcdir)/include/foreign \
@@ -35,7 +37,9 @@ ObjectDump_SOURCES = \
 	ObjectDump.cpp \
 	$(top_srcdir)/ld64/src/ld/debugline.c
 ObjectDump_LDADD = \
-	$(top_srcdir)/ld64/src/3rd/libhelper.la
+	$(top_srcdir)/ld64/src/3rd/libhelper.la \
+	$(LTO_RPATH) \
+	$(LTO_LIB)
 
 dyldinfo_SOURCES = dyldinfo.cpp
 dyldinfo_LDADD = \

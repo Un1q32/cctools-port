@@ -10,39 +10,105 @@ AC_DEFUN([CHECK_LLVM],
                    [llvm config tool]),
     [LLVM_CONFIG=$with_llvm_config], [LLVM_CONFIG=no])
 
+    # cctools-port: allow pointing straight at an LLVM installation.  This is
+    # required when cross compiling, because there is no llvm-config for the
+    # target (and the host one would report the wrong paths).
+    AC_ARG_VAR([LLVM_INCLUDE_DIR], [LLVM include directory (e.g. for cross compiling)])
+    AC_ARG_VAR([LLVM_LIB_DIR], [LLVM library directory (e.g. for cross compiling)])
+
     if test "x$enable_lto" = "xyes"; then
-        if test "x$LLVM_CONFIG" = "xno"; then
+        if test "x$LLVM_INCLUDE_DIR" != "x" && test "x$LLVM_LIB_DIR" != "x"; then
+            LLVM_CONFIG=no
+        elif test "x$LLVM_CONFIG" = "xno"; then
             AC_PATH_PROGS(LLVM_CONFIG,
-                [llvm-config                                    \
-                llvm-config-3.8 llvm-config-3.7 llvm-config-3.6 \
-                llvm-config-3.5 llvm-config-3.4 llvm-config-3.3 \
-                llvm-config-3.2 llvm-config-3.1                 \
-                llvm-config38 llvm-config37 llvm-config36       \
-                llvm-config35 llvm-config34 llvm-config33       \
-                llvm-config32 llvm-config31],
+                [llvm-config                                              \
+                 llvm-config-24.0 llvm-config-24                          \
+                 llvm-config-23.0 llvm-config-23                          \
+                 llvm-config-22.0 llvm-config-22                          \
+                 llvm-config-21.0 llvm-config-21                          \
+                 llvm-config-20.0 llvm-config-20                          \
+                 llvm-config-19.0 llvm-config-19                          \
+                 llvm-config-18.0 llvm-config-18                          \
+                 llvm-config-17.0 llvm-config-17                          \
+                 llvm-config-16.0 llvm-config-16                          \
+                 llvm-config-15.0 llvm-config-15                          \
+                 llvm-config-14.0 llvm-config-14                          \
+                 llvm-config-13.0 llvm-config-13                          \
+                 llvm-config-12.0 llvm-config-12                          \
+                 llvm-config-11.0 llvm-config-11                          \
+                 llvm-config-10.0 llvm-config-10                          \
+                 llvm-config-9.0 llvm-config-9                            \
+                 llvm-config-8.0 llvm-config-8                            \
+                 llvm-config-7.0 llvm-config-7                            \
+                 llvm-config-6.0 llvm-config-5.0 llvm-config-4.0          \
+                 llvm-config-3.9 llvm-config-3.8 llvm-config-3.7          \
+                 llvm-config-3.6 llvm-config-3.5 llvm-config-3.4          \
+                 llvm-config-3.3 llvm-config-3.2 llvm-config-3.1          \
+                 llvm-config170 llvm-config160                            \
+                 llvm-config150 llvm-config140                            \
+                 llvm-config130 llvm-config120                            \
+                 llvm-config110 llvm-config100                            \
+                 llvm-config90 llvm-config80                              \
+                 llvm-config70 llvm-config60                              \
+                 llvm-config50 llvm-config40                              \
+                 llvm-config39 llvm-config38 llvm-config37 llvm-config36  \
+                 llvm-config35 llvm-config34 llvm-config33 llvm-config32  \
+                 llvm-config31                                            \
+                 llvm-config-3.8 llvm-config-3.7 llvm-config-3.6          \
+                 llvm-config-3.5 llvm-config-3.4 llvm-config-3.3          \
+                 llvm-config-3.2 llvm-config-3.1                          \
+                 llvm-config38 llvm-config37 llvm-config36                \
+                 llvm-config35 llvm-config34 llvm-config33                \
+                 llvm-config32 llvm-config31],
             no)
         fi
 
         if test "x$LLVM_CONFIG" != "xno"; then
             LLVM_INCLUDE_DIR="`${LLVM_CONFIG} --includedir`"
             LLVM_LIB_DIR="`${LLVM_CONFIG} --libdir`"
+        fi
 
+        if test "x$LLVM_INCLUDE_DIR" != "x" && test "x$LLVM_LIB_DIR" != "x"; then
             ORIGLDFLAGS=$LDFLAGS
             LDFLAGS="$LDFLAGS -L${LLVM_LIB_DIR}"
 
-            AC_CHECK_LIB([LTO],[lto_get_version],
-             [ LTO_LIB="-L${LLVM_LIB_DIR} -lLTO"
-               if test "x$rpathlink" = "xyes"; then
-                   LTO_RPATH="-Wl,-rpath,$LLVM_LIB_DIR,--enable-new-dtags"
-                   LTO_LIB="$LTO_LIB"
-               fi
-               LTO_DEF=-DLTO_SUPPORT
-               # DO NOT include the LLVM include dir directly,
-               # it may cause the build to fail.
-               `cp -r $LLVM_INCLUDE_DIR/llvm-c/lto.h include/llvm-c/lto.h 2>/dev/null 1>&2`
-               AC_SUBST([LTO_DEF])
-               AC_SUBST([LTO_RPATH])
-               AC_SUBST([LTO_LIB]) ])
+            AC_CHECK_LIB([LTO],[lto_get_version], [
+
+              # DO NOT include the LLVM include dir directly,
+              # it may cause the build to fail.
+
+              if test -e $LLVM_INCLUDE_DIR/llvm-c/lto.h; then
+                cp -f $LLVM_INCLUDE_DIR/llvm-c/lto.h `dirname ${0}`/include/llvm-c
+
+                if test -e $LLVM_INCLUDE_DIR/llvm-c/ExternC.h; then
+                  cp -f $LLVM_INCLUDE_DIR/llvm-c/ExternC.h `dirname ${0}`/include/llvm-c
+                fi
+
+                if test -e $LLVM_INCLUDE_DIR/llvm-c/Visibility.h; then
+                  cp -f $LLVM_INCLUDE_DIR/llvm-c/Visibility.h `dirname ${0}`/include/llvm-c
+                  mkdir -p `dirname ${0}`/include/llvm/Config
+                  cp -f $LLVM_INCLUDE_DIR/llvm/Config/llvm-config.h `dirname ${0}`/include/llvm/Config
+                fi
+
+                LTO_DEF=-DLTO_SUPPORT
+                LTO_LIB="-L${LLVM_LIB_DIR} -lLTO"
+
+                if test "x$rpathlink" = "xyes"; then
+                  LTO_RPATH="-Wl,-rpath,$LLVM_LIB_DIR,--enable-new-dtags"
+                fi
+
+                if test "x$isdarwin" = "xyes"; then
+                  LTO_RPATH="-Wl,-rpath,$LLVM_LIB_DIR"
+                fi
+              else
+                AC_MSG_WARN([<llvm-c/lto.h> header file not found, disabling LTO support])
+              fi
+
+              AC_SUBST([LTO_DEF])
+              AC_SUBST([LTO_RPATH])
+              AC_SUBST([LTO_LIB])
+
+            ])
 
             LDFLAGS=$ORIGLDFLAGS
         else

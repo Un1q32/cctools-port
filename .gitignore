@@ -33,6 +33,9 @@ lt*.m4
 
 # Copied from the LLVM installation by configure
 cctools/include/llvm-c/lto.h
+cctools/include/llvm-c/ExternC.h
+cctools/include/llvm-c/Visibility.h
+cctools/include/llvm/
 
 # Built programs
 cctools/ar/ar

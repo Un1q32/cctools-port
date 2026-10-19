@@ -14,17 +14,21 @@
 
 static int get_lto_cputype(
     struct arch_flag *arch_flag,
-    char *target_triple);
+    const char *target_triple);
 
 static int tried_to_load_lto = 0;
 static void *lto_handle = NULL;
-static int (*lto_is_object)(const void* mem, size_t length) = NULL;
+static lto_bool_t (*lto_is_object)(const void* mem, size_t length) = NULL;
 static lto_module_t (*lto_create)(const void* mem, size_t length) = NULL;
+static lto_module_t (*lto_create_local)(const void* mem, size_t length,
+					const char *path) = NULL;
+static lto_bool_t (*lto_get_macho_cputype)(void *mod, unsigned int *cputype,
+					   unsigned int *cpusubtype) = NULL;
 static void (*lto_dispose)(void *mod) = NULL;
-static char * (*lto_get_target)(void *mod) = NULL;
+static const char * (*lto_get_target)(void *mod) = NULL;
 static uint32_t (*lto_get_num_symbols)(void *mod) = NULL;
 static lto_symbol_attributes (*lto_get_sym_attr)(void *mod, uint32_t n) = NULL;
-static char * (*lto_get_sym_name)(void *mod, uint32_t n) = NULL;
+static const char * (*lto_get_sym_name)(void *mod, uint32_t n) = NULL;
 
 /*
  * is_llvm_bitcode() is passed an ofile struct pointer and a pointer and size
@@ -145,6 +149,12 @@ void **pmod) /* maybe NULL */
 				     "lto_module_get_symbol_attribute");
 	    lto_get_sym_name = dlsym(lto_handle, "lto_module_get_symbol_name");
 
+	    /* Optional, only present in newer libLTO versions. */
+	    lto_create_local = dlsym(lto_handle,
+				     "lto_module_create_in_local_context");
+	    lto_get_macho_cputype = dlsym(lto_handle,
+					  "lto_module_get_macho_cputype");
+
 	    if(lto_is_object == NULL ||
 	       lto_create == NULL ||
 	       lto_dispose == NULL ||
@@ -164,7 +174,10 @@ void **pmod) /* maybe NULL */
 	if(!lto_is_object(addr, size))
 	    return(0);
 	
-	mod = lto_create(addr, size);
+	if(lto_create_local != NULL)
+	    mod = lto_create_local(addr, size, "<memory>");
+	else
+	    mod = lto_create(addr, size);
 	if(mod == NULL)
 	    return(0);
 
@@ -178,7 +191,23 @@ void **pmod) /* maybe NULL */
 	arch_flag->cputype = 0;
 	arch_flag->cpusubtype = 0;
 	arch_flag->name = NULL;
-	(void)get_lto_cputype(arch_flag, lto_get_target(mod));
+	/*
+	 * Newer libLTO versions can report the mach-o cputype directly
+	 * instead of us having to guess it from the target triple.
+	 */
+	if(lto_get_macho_cputype != NULL){
+	    unsigned int cputype = 0;
+	    unsigned int cpusubtype = 0;
+	    if(lto_get_macho_cputype(mod, &cputype, &cpusubtype) &&
+	       cputype != 0){
+		arch_flag->cputype = cputype;
+		arch_flag->cpusubtype = cpusubtype;
+		arch_flag->name = (char *)get_arch_name_from_types(
+		    arch_flag->cputype, arch_flag->cpusubtype);
+	    }
+	}
+	if(arch_flag->cputype == 0)
+	    (void)get_lto_cputype(arch_flag, lto_get_target(mod));
 
 	if(pmod != NULL)
 	    *pmod = mod;
@@ -198,9 +227,9 @@ static
 int
 get_lto_cputype(
 struct arch_flag *arch_flag,
-char *target_triple)
+const char *target_triple)
 {
-    char *p;
+    const char *p;
     size_t n;
 
 	if(target_triple == NULL)
@@ -404,7 +433,7 @@ lto_symbol_name(
 void *mod,
 uint32_t symbol_index)
 {
-	return(lto_get_sym_name(mod, symbol_index));
+	return((char *)lto_get_sym_name(mod, symbol_index));
 }
 
 __private_extern__

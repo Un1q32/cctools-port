@@ -2,13 +2,16 @@ bin_PROGRAMS = ld
 ld_LDADD =  \
     $(top_srcdir)/ld64/src/3rd/libhelper.la  \
     $(DL_LIB) \
-    $(UUID_LIB)
+    $(UUID_LIB) \
+    $(LTO_RPATH) \
+    $(LTO_LIB)
 
 ld_LDFLAGS = $(PTHREAD_FLAGS) $(EXECINFO_LIB)
 
 ld_CXXFLAGS =  \
 	-D__DARWIN_UNIX03 \
 	$(WARNINGS) \
+	$(LTO_DEF) \
 	$(ENDIAN_FLAG) \
 	-I$(top_srcdir)/include \
 	-I$(top_srcdir)/include/foreign \
@@ -23,6 +26,7 @@ ld_CXXFLAGS =  \
 ld_CFLAGS =  \
 	-D__DARWIN_UNIX03 \
 	$(WARNINGS) \
+	$(LTO_DEF) \
 	$(ENDIAN_FLAG) \
 	-I$(top_srcdir)/include \
 	-I$(top_srcdir)/include/foreign \

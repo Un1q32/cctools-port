@@ -597,8 +597,21 @@ bool Reader::optimize(const std::vector<ObjectFile::Atom *>& allAtoms, std::vect
 	}
 #endif
 	// run code generator
-	size_t machOFileLen;
-	const uint8_t* machOFile = (uint8_t*)::lto_codegen_compile(generator, &machOFileLen);
+	size_t machOFileLen = 0;
+	const uint8_t* machOFile = NULL;
+#if LTO_API_VERSION >= 12
+	if ( ::lto_api_version() >= 12 ) {
+		// newer libLTO: lto_codegen_compile() is deprecated in favour of
+		// running the optimizer and then compiling the optimized module
+		if ( ::lto_codegen_optimize(generator) )
+			throwf("could not do LTO optimization: %s", ::lto_get_error_message());
+		machOFile = (const uint8_t*)::lto_codegen_compile_optimized(generator, &machOFileLen);
+	}
+	else
+#endif
+	{
+		machOFile = (const uint8_t*)::lto_codegen_compile(generator, &machOFileLen);
+	}
 	if ( machOFile == NULL ) 
 		throwf("could not do LTO codegen: %s", ::lto_get_error_message());
 	
