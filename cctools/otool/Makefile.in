@@ -115,7 +115,7 @@ am_otool_OBJECTS = otool-main.$(OBJEXT) \
 	otool-print_objc2_64bit.$(OBJEXT) \
 	otool-print_objc2_util.$(OBJEXT) otool-print_bitcode.$(OBJEXT) \
 	otool-coff_print.$(OBJEXT) otool-arm64_disasm.$(OBJEXT) \
-	otool-dyld_bind_info.$(OBJEXT)
+	otool-ppc_llvm_disasm.$(OBJEXT) otool-dyld_bind_info.$(OBJEXT)
 otool_OBJECTS = $(am_otool_OBJECTS)
 am__DEPENDENCIES_1 =
 @ISDARWIN_FALSE@otool_DEPENDENCIES =  \
@@ -368,6 +368,7 @@ otool_SOURCES = \
 	print_bitcode.c \
 	coff_print.c \
 	arm64_disasm.c \
+	ppc_llvm_disasm.c \
 	dyld_bind_info.c 
 
 all: all-am
@@ -544,6 +545,12 @@ otool-arm64_disasm.o: arm64_disasm.c
 
 otool-arm64_disasm.obj: arm64_disasm.c
 	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(otool_CFLAGS) $(CFLAGS) -c -o otool-arm64_disasm.obj `if test -f 'arm64_disasm.c'; then $(CYGPATH_W) 'arm64_disasm.c'; else $(CYGPATH_W) '$(srcdir)/arm64_disasm.c'; fi`
+
+otool-ppc_llvm_disasm.o: ppc_llvm_disasm.c
+	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(otool_CFLAGS) $(CFLAGS) -c -o otool-ppc_llvm_disasm.o `test -f 'ppc_llvm_disasm.c' || echo '$(srcdir)/'`ppc_llvm_disasm.c
+
+otool-ppc_llvm_disasm.obj: ppc_llvm_disasm.c
+	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(otool_CFLAGS) $(CFLAGS) -c -o otool-ppc_llvm_disasm.obj `if test -f 'ppc_llvm_disasm.c'; then $(CYGPATH_W) 'ppc_llvm_disasm.c'; else $(CYGPATH_W) '$(srcdir)/ppc_llvm_disasm.c'; fi`
 
 otool-dyld_bind_info.o: dyld_bind_info.c
 	$(AM_V_CC)$(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(otool_CFLAGS) $(CFLAGS) -c -o otool-dyld_bind_info.o `test -f 'dyld_bind_info.c' || echo '$(srcdir)/'`dyld_bind_info.c

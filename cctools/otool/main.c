@@ -52,6 +52,7 @@
 #include "i386_disasm.h"
 #include "arm_disasm.h"
 #include "arm64_disasm.h"
+#include "ppc_llvm_disasm.h"
 #include "llvm-c/Disassembler.h"
 
 #ifndef LLVMDisassembler_Option_Color
@@ -1828,7 +1829,9 @@ void *cookie) /* cookie is not used */
 		next_relocs = 0;
 		loc_relocs = NULL;
 		nloc_relocs = 0;
-		if(Vflag){
+		if(Vflag ||
+		   ((mh_cputype == CPU_TYPE_POWERPC ||
+		     mh_cputype == CPU_TYPE_POWERPC64) && vflag)){
 		    if(mh_filetype == MH_KEXT_BUNDLE){
 			get_linked_reloc_info(ofile->load_commands, mh_ncmds,
 			    mh_sizeofcmds, ofile->object_byte_sex,
@@ -4230,6 +4233,7 @@ uint64_t seg_addr)
     unsigned char byte_word;
     LLVMDisasmContextRef arm64_dc;
     LLVMDisasmContextRef arm_dc, thumb_dc, i386_dc, x86_64_dc;
+    LLVMDisasmContextRef ppc_dc;
     uint32_t n, ninsts;
     struct inst *insts;
     char *sect_start;
@@ -4241,6 +4245,7 @@ uint64_t seg_addr)
 	i386_dc = NULL;
 	x86_64_dc = NULL;
 	arm64_dc = NULL;
+	ppc_dc = NULL;
 	n = 0;
 	ninsts = 0;
 	insts = NULL;
@@ -4388,6 +4393,20 @@ uint64_t seg_addr)
 					LLVMDisassembler_Option_Color);
 			}
 		}
+		if(cputype == CPU_TYPE_POWERPC || cputype == CPU_TYPE_POWERPC64){
+			ppc_dc = create_ppc_llvm_disassembler(cputype,
+							      cpusubtype);
+			if(ppc_dc == NULL){
+			    printf("can't create powerpc llvm disassembler\n");
+			    return;
+			}
+			if(show_latency)
+			    llvm_disasm_set_options(ppc_dc,
+				LLVMDisassembler_Option_PrintLatency);
+			if(use_color)
+			    llvm_disasm_set_options(ppc_dc,
+				LLVMDisassembler_Option_Color);
+		}
 	    if(gflag){
 		ninsts = 100;
 		insts = allocate(sizeof(struct inst) * ninsts);
@@ -4418,8 +4437,9 @@ uint64_t seg_addr)
 			    printf("%016llx", cur_addr + addr_slide);
 			else
 			    printf("%08x", (uint32_t)(cur_addr + addr_slide));
-			if((qflag == FALSE ||
-			    (cputype == CPU_TYPE_POWERPC)) &&
+			if(qflag == FALSE &&
+			    cputype != CPU_TYPE_POWERPC &&
+			    cputype != CPU_TYPE_POWERPC64 &&
 			    (cputype != CPU_TYPE_ARM64 &&
                              cputype != CPU_TYPE_ARM64_32))
 			    printf("\t");
@@ -4465,6 +4485,15 @@ uint64_t seg_addr)
 				strings_size, indirect_symbols, nindirect_symbols,
 				cputype, load_commands, ncmds, sizeofcmds,
 				object_addr, object_size, verbose, arm64_dc);
+		else if(cputype == CPU_TYPE_POWERPC ||
+			cputype == CPU_TYPE_POWERPC64)
+		    j = ppc_llvm_disassemble(sect, (uint32_t)size - i,
+				cur_addr, addr, object_byte_sex, relocs, nrelocs,
+				symbols, symbols64, nsymbols, sorted_symbols,
+				nsorted_symbols, strings, strings_size,
+				indirect_symbols, nindirect_symbols,
+				load_commands, ncmds, sizeofcmds, cputype,
+				verbose, ppc_dc);
 		else{
 		    printf("Can't disassemble unknown cputype %d\n", cputype);
 		    return;
@@ -4552,6 +4581,8 @@ uint64_t seg_addr)
 		delete_arm_llvm_disassembler(thumb_dc);
 	    if(arm64_dc != NULL)
 		delete_arm64_llvm_disassembler(arm64_dc);
+	    if(ppc_dc != NULL)
+		delete_ppc_llvm_disassembler(ppc_dc);
 	}
 	else{
 	    if(cputype == CPU_TYPE_I386 || cputype == CPU_TYPE_X86_64){

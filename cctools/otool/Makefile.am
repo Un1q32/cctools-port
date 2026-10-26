@@ -25,4 +25,5 @@ otool_SOURCES =  \
 	print_bitcode.c \
 	coff_print.c \
 	arm64_disasm.c \
+	ppc_llvm_disasm.c \
 	dyld_bind_info.c 
