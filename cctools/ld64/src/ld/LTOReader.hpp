@@ -293,6 +293,7 @@ public:
 																const std::vector<const char*>& llvmOptions,
 																bool allGlobalsAReDeadStripRoots,
 																int outputKind, bool verbose, bool saveTemps, const char* outputFilePath,
+																const char* objectPathLTO,
 																bool pie, bool allowTextRelocs);
 
 private:
@@ -472,6 +473,7 @@ bool Reader::optimize(const std::vector<ObjectFile::Atom *>& allAtoms, std::vect
 							const std::vector<const char*>& llvmOptions,
 							bool allGlobalsAReDeadStripRoots,
 							int okind, bool verbose, bool saveTemps, const char* outputFilePath,
+							const char* objectPathLTO,
 							bool pie, bool allowTextRelocs)
 { 
 	// this method is call on all Readers.  We want the first call to trigger optimization
@@ -698,6 +700,27 @@ bool Reader::optimize(const std::vector<ObjectFile::Atom *>& allAtoms, std::vect
         strcpy(tempOptBitcodePath, outputFilePath);
         strcat(tempOptBitcodePath, ".lto.opt.bc");
         ::lto_codegen_write_merged_modules(generator, tempOptBitcodePath);
+	}
+
+	// if requested, save off temp mach-o file(s) to a caller-specified path
+	if ( objectPathLTO != NULL ) {
+		for (size_t i = 0; i < machOFiles.size(); ++i) {
+			char tempMachoPath[MAXPATHLEN];
+			strlcpy(tempMachoPath, objectPathLTO, sizeof(tempMachoPath));
+			if ( machOFiles.size() > 1 ) {
+				char suffix[32];
+				snprintf(suffix, sizeof(suffix), ".%zu", i);
+				strlcat(tempMachoPath, suffix, sizeof(tempMachoPath));
+			}
+			int fd = ::open(tempMachoPath, O_CREAT | O_WRONLY | O_TRUNC, 0666);
+			if ( fd != -1 ) {
+				::write(fd, machOFiles[i].first, machOFiles[i].second);
+				::close(fd);
+			}
+			else {
+				warning("could not write LTO temp file '%s'", tempMachoPath);
+			}
+		}
 	}
 
 	// parse generated mach-o files into MachOReaders and sync generated

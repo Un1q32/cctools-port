@@ -162,6 +162,7 @@ public:
 													const std::vector<const char*>& llvmOptions,
 													bool allGlobalsAReDeadStripRoots, int okind, 
 													bool verbose, bool saveTemps, const char* outputFilePath,
+													const char* objectPathLTO,
 													bool pie, bool allowTextRelocs) { return false; }
 	virtual bool						hasLongBranchStubs()		{ return false; }
 

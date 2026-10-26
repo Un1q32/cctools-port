@@ -105,7 +105,8 @@ Options::Options(int argc, const char* argv[])
 	  fUsingLazyDylibLinking(false), fEncryptable(true), 
 	  fOrderData(true), fMarkDeadStrippableDylib(false),
 	  fMakeClassicDyldInfo(true), fMakeCompressedDyldInfo(true), fAllowCpuSubtypeMismatches(false),
-	  fUseSimplifiedDylibReExports(false), fObjCABIVersion2POverride(false), fSaveTempFiles(false)
+	  fUseSimplifiedDylibReExports(false), fObjCABIVersion2POverride(false), fSaveTempFiles(false),
+	  fTempLtoObjectPath(NULL), fExportDynamic(false)
 {
 	this->checkForClassic(argc, argv);
 	this->parsePreCommandLineEnvironmentSettings();
@@ -331,6 +332,8 @@ bool Options::allGlobalsAreDeadStripRoots()
 	switch ( fOutputKind ) {
 		case Options::kDynamicExecutable:
 		case Options::kStaticExecutable:
+			// -export_dynamic keeps all global symbols exported.
+			return fExportDynamic;
 		case Options::kPreload:
 			// by default unused globals in a main executable are stripped
 			return false;
@@ -2519,6 +2522,14 @@ void Options::parse(int argc, const char* argv[])
 					fObjCABIVersion2POverride = true;
 				else
 					warning("ignoring unrecognized argument (%s) to -objc_abi_version", version);
+			}
+			else if ( strcmp(arg, "-object_path_lto") == 0 ) {
+				fTempLtoObjectPath = argv[++i];
+				if ( fTempLtoObjectPath == NULL )
+					throw "missing argument to -object_path_lto";
+			}
+			else if ( strcmp(arg, "-export_dynamic") == 0 ) {
+				fExportDynamic = true;
 			}
 			else if ( strcmp(arg, "-demangle") == 0 ) {
 				// <rdar://problem/8303976> add -demangle noop to ld64-97

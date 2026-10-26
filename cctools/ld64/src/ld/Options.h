@@ -205,6 +205,7 @@ public:
 	std::vector<SegmentSize>&	customSegmentSizes() { return fCustomSegmentSizes; }
 	std::vector<SegmentProtect>& customSegmentProtections() { return fCustomSegmentProtections; }
 	bool						saveTempFiles() { return fSaveTempFiles; }
+	const char*					tempLtoObjectPath() { return fTempLtoObjectPath; }
 	const std::vector<const char*>&   rpaths() { return fRPaths; }
 	bool						readOnlyx86Stubs() { return fReadOnlyx86Stubs; }
 	std::vector<DylibOverride>&	dylibOverrides() { return fDylibOverrides; }
@@ -400,6 +401,8 @@ private:
 	std::vector<const char*>			fFrameworkSearchPaths;
 	std::vector<const char*>			fSDKPaths;
 	bool								fSaveTempFiles;
+	const char*							fTempLtoObjectPath;
+	bool								fExportDynamic;
 };
 
 

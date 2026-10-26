@@ -716,8 +716,8 @@ void Linker::optimize()
 		didSomething |= (*it)->optimize(fAllAtoms, newAtoms, additionalUndefines, fDeadAtoms, newlyDeadAtoms, fNextInputOrdinal, 
 			fOutputFile, entryPoint(true), fOptions.llvmOptions(),
 			 fOptions.allGlobalsAreDeadStripRoots(), (int)fOptions.outputKind(), fOptions.verbose(),
-			fOptions.saveTempFiles(), fOptions.getOutputFilePath(), fOptions.positionIndependentExecutable(),
-			fOptions.allowTextRelocs());
+			fOptions.saveTempFiles(), fOptions.getOutputFilePath(), fOptions.tempLtoObjectPath(),
+			fOptions.positionIndependentExecutable(), fOptions.allowTextRelocs());
 	}
 	
 	// only do next steps if some optimization was actually done

@@ -73,6 +73,7 @@ public:
 																const std::vector<const char*>& llvmOptions,
 																bool allGlobalsAReDeadStripRoots, int okind, 
 																bool verbose, bool saveTemps, const char* outputFilePath,
+																const char* objectPathLTO,
 																bool pie, bool allowTextRelocs);
 
 private:
@@ -383,13 +384,14 @@ bool  Reader<A>::optimize(const std::vector<ObjectFile::Atom*>& allAtoms, std::v
 							const std::vector<const char*>& llvmOptions,
 							bool allGlobalsAReDeadStripRoots, int okind, 
 							bool verbose, bool saveTemps, const char* outputFilePath,
+							const char* objectPathLTO,
 							bool pie, bool allowTextRelocs)
 {
 	bool result = false;
 	for(std::vector<ObjectFile::Reader*>::iterator it=fInstantiatedReaders.begin(); it != fInstantiatedReaders.end(); ++it) {
 		result |= (*it)->optimize(allAtoms, newAtoms, additionalUndefines, deadAtoms, newDeadAtoms, nextOrdinal, 
 							writer, entryPointAtom, llvmOptions, allGlobalsAReDeadStripRoots, okind, 
-							verbose, saveTemps, outputFilePath, pie, allowTextRelocs);
+							verbose, saveTemps, outputFilePath, objectPathLTO, pie, allowTextRelocs);
 	}
 	return result;
 }
