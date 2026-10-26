@@ -570,7 +570,7 @@ bool Reader::optimize(const std::vector<ObjectFile::Atom *>& allAtoms, std::vect
 		// 1 - atom scope is global (and not linkage unit).
 		// 2 - included in nonLLVMRefs set.
 		// If a symbol is not listed in exportList then LTO is free to optimize it away.
-		if ( (atom->getScope() == ObjectFile::Atom::scopeGlobal) ) 
+		if ( (atom->getScope() == ObjectFile::Atom::scopeGlobal) && allGlobalsAReDeadStripRoots )
 			::lto_codegen_add_must_preserve_symbol(generator, name);
 		else if ( nonLLVMRefs.find(name) != nonLLVMRefs.end() ) 
 			::lto_codegen_add_must_preserve_symbol(generator, name);
