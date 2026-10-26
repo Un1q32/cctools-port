@@ -2598,6 +2598,7 @@ void Options::buildSearchPaths(int argc, const char* argv[])
 			fVerbose = true;
 			extern const char ldVersionString[];
 			fprintf(stderr, "%s", ldVersionString);
+			fprintf(stderr, "BUILD "  __TIME__ " "  __DATE__"\n");
 			fprintf(stderr, "configured to support archs: %s\n", ALL_SUPPORTED_ARCHS);
 			 // if only -v specified, exit cleanly
 			 if ( argc == 2 ) {
