@@ -639,7 +639,7 @@ cpu_type_t Linker::inferArchitecture()
 #elif __arm__
 	return CPU_TYPE_ARM;
 #else
-	#error unknown default architecture
+	return CPU_TYPE_POWERPC;
 #endif
 }
 
