@@ -28,7 +28,6 @@
 #include <unistd.h>
 #include <dlfcn.h>
 
-#include <algorithm>
 #include <vector>
 #include <map>
 
@@ -92,7 +91,7 @@ void doPass(const Options& opts, ld::Internal& internal)
 
     bool runPass = false;
 #if SUPPORT_ARCH_arm64e
-    runPass = opts.supportsAuthenticatedPointers() && opts.sharedRegionEligible();
+    runPass = opts.supportsAuthenticatedPointers() & opts.sharedRegionEligible();
 #endif
     if ( !runPass )
         return;
@@ -242,6 +241,7 @@ void doPass(const Options& opts, ld::Internal& internal)
             const ld::Atom* atom = *ait;
             if ( objcMap.count(atom) != 0 ) {
                 newSection->atoms.push_back(atom);
+                internal.atomToSection[atom] = newSection;
                 if (log) fprintf(stderr, "moved to __OBJC_CONST: %s, size=%llu\n", atom->name(), atom->size());
                 *ait = NULL;  // change atom to NULL for later bulk removal
             }

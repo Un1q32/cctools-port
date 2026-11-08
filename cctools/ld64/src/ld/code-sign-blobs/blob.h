@@ -105,8 +105,6 @@ public:
 	char *stringAt(Offset offset);
 	const char *stringAt(Offset offset) const;
 
-	BlobCore *clone() const;
-
 	void *data()						{ return this; }
 	const void *data() const			{ return this; }
 	void length(size_t size)			{ mLength = size; }
@@ -182,6 +180,7 @@ public:
 			return p;
 		return NULL;
 	}
+	
 	static BlobType *readBlob(int fd)
 	{ return specific(BlobCore::readBlob(fd, _magic, sizeof(BlobType), 0), true); }
 

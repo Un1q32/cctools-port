@@ -38,7 +38,6 @@
 #include <mach-o/dyld.h>
 #include <dlfcn.h>
 #include <atomic>
-#include <algorithm>
 #include <vector>
 #include <map>
 #include <unordered_set>
@@ -52,7 +51,6 @@
 #include "macho_relocatable_file.h"
 #include "lto_file.h"
 #include "SymbolTable.h"
-#include "Containers.h"
 
 // ld64-port: We keep this even though it has been removed upstream
 // as I am not sure if it won't break anything on all supported
@@ -86,8 +84,8 @@ public:
 	uint64_t							size() const override		{ return 0; }
 	uint64_t							objectAddress() const override { return 0; }
 	void								copyRawContent(uint8_t buffer[]) const override { }
-	ld::Fixup::iterator					fixupsBegin() const override	{ return _undefs.data(); }
-	ld::Fixup::iterator					fixupsEnd()	const override 	{ return _undefs.data() + _undefs.size(); }
+	ld::Fixup::iterator					fixupsBegin() const override	{ return &_undefs[0]; }
+	ld::Fixup::iterator					fixupsEnd()	const override 	{ return &_undefs[_undefs.size()]; }
 
 	// for adding references to symbols outside bitcode file
 	void										addReference(const char* nm)
@@ -240,7 +238,6 @@ public:
 	static bool						libLTOisLoaded() { return (::lto_get_version() != NULL); }
 	static bool						optimize(   const std::vector<const ld::Atom*>&	allAtoms,
 												ld::Internal&						state,
-												const Options&								ldOptions,
 												const OptimizeOptions&				options,
 												ld::File::AtomHandler&				handler,
 												std::vector<const ld::Atom*>&		newAtoms, 
@@ -257,7 +254,8 @@ private:
 	static void ltoDiagnosticHandler(lto_codegen_diagnostic_severity_t, const char*, void*);
 #endif
 
-	using CStringToAtom = ld::CStringMap<Atom*>;
+	typedef	std::unordered_set<const char*, ld::CStringHash, ld::CStringEquals>  CStringSet;
+	typedef std::unordered_map<const char*, Atom*, ld::CStringHash, ld::CStringEquals> CStringToAtom;
 	
 	class AtomSyncer : public ld::File::AtomHandler {
 	public:
@@ -278,7 +276,6 @@ private:
 
 	static void						setPreservedSymbols(const std::vector<const ld::Atom*>&	allAtoms,
 														ld::Internal&						state,
-														const Options&							  ldOptions,
 														const OptimizeOptions&				options,
 														CStringToAtom &deadllvmAtoms,
 														CStringToAtom &llvmAtoms,
@@ -301,7 +298,6 @@ private:
 	static bool optimizeLTO(const std::vector<File*> files,
 							const std::vector<const ld::Atom*>&	allAtoms,
 							ld::Internal&						state,
-							const Options&							  ldOptions,
 							const OptimizeOptions&				options,
 							ld::File::AtomHandler&				handler,
 							std::vector<const ld::Atom*>&		newAtoms,
@@ -335,7 +331,7 @@ bool Parser::_s_llvmOptionsProcessed = false;
 bool Parser::validFile(const uint8_t* fileContent, uint64_t fileLength, cpu_type_t architecture, cpu_subtype_t subarch)
 {
 	for (const ArchInfo* t=archInfoArray; t->archName != NULL; ++t) {
-		if ( (architecture == t->cpuType) && (subarch == t->cpuSubType) ) {
+		if ( (architecture == t->cpuType) && (!(t->isSubType) || (subarch == t->cpuSubType)) ) {
 			bool result = ::lto_module_is_object_file_in_memory_for_target(fileContent, fileLength, t->llvmTriplePrefix);
 			if ( !result ) {
 				// <rdar://problem/8434487> LTO only supports thumbv7 not armv7
@@ -355,13 +351,18 @@ const char* Parser::fileKind(const uint8_t* p, uint64_t fileLength)
 		cpu_type_t arch = LittleEndian::get32(*((uint32_t*)(&p[16])));
 		for (const ArchInfo* t=archInfoArray; t->archName != NULL; ++t) {
 			if ( arch == t->cpuType ) {
-				if ( ::lto_module_is_object_file_in_memory_for_target(p, fileLength, t->llvmTriplePrefix) )
+				 if ( t->isSubType ) {
+					if ( ::lto_module_is_object_file_in_memory_for_target(p, fileLength, t->llvmTriplePrefix) )
 						return t->archName;
+				}
+				else {
+					return t->archName;
+				}
 			}
 		}
 		return "unknown bitcode architecture";
 	}
-	return nullptr;
+	return NULL;
 }
 
 File* Parser::parse(const uint8_t* fileContent, uint64_t fileLength, const char* path, time_t modTime, ld::File::Ordinal ordinal,
@@ -399,7 +400,6 @@ ld::relocatable::File* Parser::parseMachOFile(const uint8_t* p, size_t len, cons
 	objOpts.maxDefaultCommonAlignment = options.maxDefaultCommonAlignment;
 	objOpts.internalSDK			= options.internalSDK;
 	objOpts.forceHidden			= false;
-	objOpts.avoidMisalignedPointers  = options.avoidMisalignedPointers;
 
 	const char *object_path = path.c_str();
 	if (path.empty())
@@ -690,7 +690,6 @@ void Parser::ltoDiagnosticHandler(lto_codegen_diagnostic_severity_t severity, co
 /// Instruct libLTO about the list of symbols to preserve, compute deadllvmAtoms and llvmAtoms
 void Parser::setPreservedSymbols(	const std::vector<const ld::Atom*>&	allAtoms,
 									ld::Internal&						state,
-									const Options&                ldOptions,
 									const OptimizeOptions&				options,
 									CStringToAtom &deadllvmAtoms,
 									CStringToAtom &llvmAtoms,
@@ -701,7 +700,7 @@ void Parser::setPreservedSymbols(	const std::vector<const ld::Atom*>&	allAtoms,
 	// originating atom is not part of any LTO Reader. This allows optimizer to optimize an
 	// external (i.e. not originated from same .o file) reference if all originating atoms are also
 	// defined in llvm bitcode file.
-	ld::CStringSet nonLLVMRefs;
+	CStringSet nonLLVMRefs;
 	bool hasNonllvmAtoms = false;
 	for (std::vector<const ld::Atom*>::const_iterator it = allAtoms.begin(); it != allAtoms.end(); ++it) {
 		const ld::Atom* atom = *it;
@@ -723,7 +722,6 @@ void Parser::setPreservedSymbols(	const std::vector<const ld::Atom*>&	allAtoms,
 						target = state.indirectBindingTable[fit->u.bindingIndex];
 						if ( (target != NULL) && (target->contentType() == ld::Atom::typeLTOtemporary) )
 							nonLLVMRefs.insert(target->name());
-						break;
 					default:
 						break;
 				}
@@ -773,9 +771,9 @@ void Parser::setPreservedSymbols(	const std::vector<const ld::Atom*>&	allAtoms,
 	}
 
 	// tell code generator about symbols that must be preserved
-	for (const auto& it : llvmAtoms) {
-		const char* name = it.first;
-		Atom* atom = it.second;
+	for (CStringToAtom::iterator it = llvmAtoms.begin(); it != llvmAtoms.end(); ++it) {
+		const char* name = it->first;
+		Atom* atom = it->second;
 		// Include llvm Symbol in export list if it meets one of following two conditions
 		// 1 - atom scope is global (and not linkage unit).
 		// 2 - included in nonLLVMRefs set.
@@ -793,17 +791,6 @@ void Parser::setPreservedSymbols(	const std::vector<const ld::Atom*>&	allAtoms,
 			if ( logMustPreserve ) fprintf(stderr, "lto_codegen_add_must_preserve_symbol(%s) because -r mode disable LTO dead stripping\n", name);
 			::lto_codegen_add_must_preserve_symbol(generator, name);
 		}
-		else if ( options.relocatable && atom->scope() == ld::Atom::Scope::scopeLinkageUnit
-				 && ( options.keepPrivateExterns || atom->definition() == ld::Atom::Definition::definitionTentative) ) {
-			if ( logMustPreserve ) {
-				if ( options.keepPrivateExterns )
-					fprintf(stderr, "lto_codegen_add_must_preserve_symbol(%s) because it has linkage unit scope and -keep_private_externs is enabled\n", name);
-				else
-					fprintf(stderr, "lto_codegen_add_must_preserve_symbol(%s) because it has linkage unit scope and tentative definition\n", name);
-			}
-
-			::lto_codegen_add_must_preserve_symbol(generator, name);
-		}
 	}
 
 	// <rdar://problem/16165191> tell code generator to preserve initial undefines
@@ -818,8 +805,6 @@ void Parser::setPreservedSymbols(	const std::vector<const ld::Atom*>&	allAtoms,
 		::lto_codegen_set_should_embed_uselists(generator, false);
 #endif
 		if ( ! ::lto_codegen_write_merged_modules(generator, options.outputFilePath) ) {
-			// rdar://152624294 (ld -r + LTO fails to emit -dependency_info files)
-			ldOptions.writeDependencyInfo();
 			// HACK, no good way to tell linker we are all done, so just quit
 			exit(0);
 		}
@@ -1026,7 +1011,6 @@ void Parser::loadMachO(ld::relocatable::File*				machoFile,
 bool Parser::optimizeLTO(const std::vector<File*>				files,
 						 const std::vector<const ld::Atom*>&	allAtoms,
 						 ld::Internal&							state,
-						 const Options&									ldOptions,
 						 const OptimizeOptions&					options,
 						 ld::File::AtomHandler&					handler,
 						 std::vector<const ld::Atom*>&			newAtoms,
@@ -1091,7 +1075,7 @@ bool Parser::optimizeLTO(const std::vector<File*>				files,
 
 	// Compute the preserved symbols
 	CStringToAtom deadllvmAtoms, llvmAtoms;
-	setPreservedSymbols(allAtoms, state, ldOptions, options, deadllvmAtoms, llvmAtoms, generator);
+	setPreservedSymbols(allAtoms, state, options, deadllvmAtoms, llvmAtoms, generator);
 
 	size_t machOFileLen = 0;
 	const uint8_t* machOFile = NULL;
@@ -1185,8 +1169,8 @@ thinlto_code_gen_t Parser::init_thinlto_codegen(const std::vector<File*>&       
 	// originating atom is not part of any LTO Reader. This allows optimizer to optimize an
 	// external (i.e. not originated from same .o file) reference if all originating atoms are also
 	// defined in llvm bitcode file.
-	ld::CStringSet nonLLVMRefs;
-	ld::CStringSet LLVMRefs;
+	CStringSet nonLLVMRefs;
+	CStringSet LLVMRefs;
 	for (std::vector<const ld::Atom*>::const_iterator it = allAtoms.begin(); it != allAtoms.end(); ++it) {
 		const ld::Atom* atom = *it;
 		const ld::Atom* target;
@@ -1222,7 +1206,6 @@ thinlto_code_gen_t Parser::init_thinlto_codegen(const std::vector<File*>&       
 						if ( logMustPreserve )
 							fprintf(stderr, "Found a reference from %s -> %s\n", atom->name(), target->name());
 					}
-					break;
 				default:
 					break;
 			}
@@ -1516,7 +1499,6 @@ bool Parser::optimizeThinLTO(const std::vector<File*>&              files,
 
 bool Parser::optimize(  const std::vector<const ld::Atom*>&	allAtoms,
 						ld::Internal&						state,
-						const Options&								ldOptions,
 						const OptimizeOptions&				options,
 						ld::File::AtomHandler&				handler,
 						std::vector<const ld::Atom*>&		newAtoms,
@@ -1556,23 +1538,12 @@ bool Parser::optimize(  const std::vector<const ld::Atom*>&	allAtoms,
 	}
 
 	auto result =  optimizeThinLTO(theThinLTOFiles, allAtoms, state, options, handler, newAtoms, additionalUndefines) &&
-				   optimizeLTO(theLTOFiles, allAtoms, state, ldOptions, options, handler, newAtoms, additionalUndefines);
+				   optimizeLTO(theLTOFiles, allAtoms, state, options, handler, newAtoms, additionalUndefines);
 
 	// Remove InternalAtoms from ld
 	for (std::vector<File*>::iterator it=_s_files.begin(); it != _s_files.end(); ++it) {
 		(*it)->internalAtom().setCoalescedAway();
 	}
-
-	// <rdar://97955721> ld64 incorrectly coalesces ThinLTO atoms with different attributes
-	// With ThinLTO we might get multiple weak-def atoms that need to be coalesced.
-	// They're all added to the new atoms list as LTO atoms are processed, but that
-	// can cause issues in the symbol table. Depending on the name collision logic, ld64
-	// might try to use a symbol that's been coalesced already during LTO.
-	// We can instead remove all the coalesced atoms early to avoid the issue,
-	// that will also save some work for the resolver.
-	newAtoms.erase(std::remove_if(newAtoms.begin(), newAtoms.end(), [](const ld::Atom* atom) {
-			return atom->coalescedAway();
-	}), newAtoms.end());
 
 	return result;
 }
@@ -1836,57 +1807,17 @@ const char* archName(const uint8_t* fileContent, uint64_t fileLength)
 }
 
 //
-// used by ld to resolve runtime symbols early
-//
-// rdar://15476167 ("typeTempLTO should not make it to final linked image" when building a freestanding target)
-std::vector<std::string> softloadRuntimeSymbols(cpu_type_t arch)
-{
-	// TODO: rdar://15476167 ("typeTempLTO should not make it to final linked image" when building a freestanding target)
-	// adding all the symbols leads to a negative size impact and undefined symbols in some projects
-	bool useCompleteList;
-#if SUPPORT_ARCH_riscv32
-	useCompleteList = (arch == CPU_TYPE_RISCV32);
-#else
-	useCompleteList = false;
-#endif
-
-	if ( useCompleteList && runtime_api_version() >= 25 ) {
-		size_t  size = 0;
-		const char* const* symbols = ::lto_runtime_lib_symbols_list(&size);
-
-		if ( size != 0 ) {
-			std::vector<std::string> out;
-
-			for ( size_t i = 0; i < size; ++i ) {
-				// some of the names might be empty as LLVM reserves slots for some functions
-				// that can be configured dynamically depending on the target
-				if ( symbols[i] == nullptr ) continue;
-
-				// lto returns symbol names without the leading underscore
-				out.push_back(std::string("_") + symbols[i]);
-			}
-			return out;
-		}
-	}
-
-	// fallback to a predefined (incomplete) list if libLTO didn't provide one
-	return std::vector<std::string>{ "___udivdi3", "___udivsi3", "___divsi3", "___muldi3",
-		"___gtdf2", "___ltdf2", "_memset", "_strcpy", "___sanitize_trap" };
-}
-
-//
 // used by ld for doing link time optimization
 //
 bool optimize(  const std::vector<const ld::Atom*>&	allAtoms,
 				ld::Internal&						state,
-				const Options&								ldOptions,
 				const OptimizeOptions&				options,
 				ld::File::AtomHandler&				handler,
 				std::vector<const ld::Atom*>&		newAtoms, 
 				std::vector<const char*>&			additionalUndefines)
 { 
 	Mutex lock;
-	return Parser::optimize(allAtoms, state, ldOptions, options, handler, newAtoms, additionalUndefines);
+	return Parser::optimize(allAtoms, state, options, handler, newAtoms, additionalUndefines);
 }
 
 
@@ -2100,8 +2031,6 @@ WRAP_LTO_SYMBOL(lto_bool_t, lto_codegen_set_pic_model,
                 (lto_code_gen_t cg, lto_codegen_model model), (cg, model))
 WRAP_LTO_SYMBOL(void, lto_codegen_add_must_preserve_symbol,
                 (lto_code_gen_t cg, const char *symbol), (cg, symbol))
-WRAP_LTO_SYMBOL(const char* const*, lto_runtime_lib_symbols_list,
-                (size_t* sizeOut), (sizeOut))
 
 #undef WRAP_LTO_SYMBOL
 

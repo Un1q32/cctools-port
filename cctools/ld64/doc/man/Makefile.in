@@ -164,7 +164,6 @@ AUTOCONF = @AUTOCONF@
 AUTOHEADER = @AUTOHEADER@
 AUTOMAKE = @AUTOMAKE@
 AWK = @AWK@
-BLOCKS_RUNTIME_LIB = @BLOCKS_RUNTIME_LIB@
 CC = @CC@
 CCAS = @CCAS@
 CCASFLAGS = @CCASFLAGS@
@@ -310,7 +309,7 @@ target_vendor = @target_vendor@
 top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
-dist_man_MANS = man1/ld64.1 man1/ld.1 man1/ld-classic.1 \
+dist_man_MANS = man1/dyldinfo.1 man1/ld64.1 man1/ld.1 \
 	man1/unwinddump.1
 all: all-am
 

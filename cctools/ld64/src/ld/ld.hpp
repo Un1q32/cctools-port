@@ -39,7 +39,6 @@
 
 #include "configure.h"
 #include "PlatformSupport.h"
-#include "Containers.h"
 
 //FIXME: Only needed until we move VersionSet into PlatformSupport
 class Options;
@@ -113,18 +112,11 @@ public:
 		}
 	}
 
-	bool contains(ld::Platform platform, uint32_t* minVersion=nullptr) const {
+	bool contains(ld::Platform platform) const {
 		auto i = std::find_if(_versions.begin(), _versions.end(), [&platform](const PlatformVersion& version) {
 			return platform == version.platform;
 		});
-		if (i != _versions.end()) {
-			if (minVersion != nullptr)
-				*minVersion = i->minVersion;
-			return true;
-		}
-		else {
-			return false;
-		}
+		return (i != _versions.end());
 	}
 
 	bool contains(const ld::PlatformSet& platforms) const {
@@ -154,24 +146,12 @@ public:
 
 	bool minOS(const ld::VersionSet& requiredMinVersions) const {
 		__block bool retval = true;
-		// first look for exact platform match
-		__block bool exactPlatformMatchFound = false;
-		forEach(^(ld::Platform platform, uint32_t minVersion, uint32_t sdkVersion, bool& stop) {
-			uint32_t requiredMinVersion;
-			if ( requiredMinVersions.contains(platform, &requiredMinVersion) ) {
+		forEach(^(ld::Platform platform, uint32_t minVersion, uint32_t sdkVersion, bool &stop) {
+			if (!requiredMinVersions.contains(basePlatform(platform)))
+				return;
+			if (minVersion < requiredMinVersions.minOS(basePlatform(platform))) {
 				stop = true;
-				exactPlatformMatchFound = true;
-				retval = (minVersion >= requiredMinVersion);
-			}
-		});
-		if (exactPlatformMatchFound)
-			return retval;
-		// next look for inherited platform
-		forEach(^(ld::Platform platform, uint32_t minVersion, uint32_t sdkVersion, bool& stop) {
-			uint32_t requiredMinVersion;
-			if ( requiredMinVersions.contains(basePlatform(platform), &requiredMinVersion) ) {
-				stop = true;
-				retval = (minVersion >= requiredMinVersion);
+				retval = false;
 			}
 		});
 		return retval;
@@ -218,9 +198,6 @@ static const PlatformVersion mac10_16		(Platform::macOS, 0x000A1000);
 static const PlatformVersion mac11_0		(Platform::macOS, 0x000B0000);
 static const PlatformVersion mac12_0		(Platform::macOS, 0x000C0000);
 static const PlatformVersion mac13_0		(Platform::macOS, 0x000D0000);
-static const PlatformVersion mac14_0		(Platform::macOS, 0x000E0000);
-static const PlatformVersion mac14_4		(Platform::macOS, 0x000E0400);
-static const PlatformVersion mac15_0		(Platform::macOS, 0x000F0000);
 static const PlatformVersion mac10_Future 	(Platform::macOS, 0x10000000);
 
 static const PlatformVersion iOS_1_0 		(Platform::iOS, 0x00010000); // ld64-port
@@ -241,9 +218,6 @@ static const PlatformVersion iOS_13_4 		(Platform::iOS, 0x000D0400);
 static const PlatformVersion iOS_14_0 		(Platform::iOS, 0x000E0000);
 static const PlatformVersion iOS_15_0		(Platform::iOS, 0x000F0000);
 static const PlatformVersion iOS_16_0		(Platform::iOS, 0x00100000);
-static const PlatformVersion iOS_17_0		(Platform::iOS, 0x00110000);
-static const PlatformVersion iOS_17_4		(Platform::iOS, 0x00110400);
-static const PlatformVersion iOS_18_0		(Platform::iOS, 0x00120000);
 static const PlatformVersion iOS_Future 	(Platform::iOS, 0x10000000);
 
 static const PlatformVersion watchOS_1_0 		(Platform::watchOS, 0x00010000);
@@ -253,9 +227,6 @@ static const PlatformVersion watchOS_6_0 		(Platform::watchOS, 0x00060000);
 static const PlatformVersion watchOS_7_0 		(Platform::watchOS, 0x00070000);
 static const PlatformVersion watchOS_8_0		(Platform::watchOS, 0x00080000);
 static const PlatformVersion watchOS_9_0		(Platform::watchOS, 0x00090000);
-static const PlatformVersion watchOS_10_0		(Platform::watchOS, 0x000A0000);
-static const PlatformVersion watchOS_10_4		(Platform::watchOS, 0x000A0400);
-static const PlatformVersion watchOS_11_0		(Platform::watchOS, 0x000B0000);
 static const PlatformVersion watchOS_Future		(Platform::watchOS, 0x10000000);
 
 static const PlatformVersion tvOS_9_0 			(Platform::tvOS, 0x00090000);
@@ -264,9 +235,6 @@ static const PlatformVersion tvOS_13_0 			(Platform::tvOS, 0x000D0000);
 static const PlatformVersion tvOS_14_0 			(Platform::tvOS, 0x000E0000);
 static const PlatformVersion tvOS_15_0			(Platform::tvOS, 0x000F0000);
 static const PlatformVersion tvOS_16_0			(Platform::tvOS, 0x00100000);
-static const PlatformVersion tvOS_17_0			(Platform::tvOS, 0x00110000);
-static const PlatformVersion tvOS_17_4			(Platform::tvOS, 0x00110400);
-static const PlatformVersion tvOS_18_0			(Platform::tvOS, 0x00120000);
 static const PlatformVersion tvOS_Future		(Platform::tvOS, 0x10000000);
 
 static const PlatformVersion bridgeOS_1_0 			(Platform::bridgeOS, 0x00010000);
@@ -274,25 +242,16 @@ static const PlatformVersion bridgeOS_4_0 			(Platform::bridgeOS, 0x00040000);
 static const PlatformVersion bridgeOS_5_0 			(Platform::bridgeOS, 0x00050000);
 static const PlatformVersion bridgeOS_6_0			(Platform::bridgeOS, 0x00060000);
 static const PlatformVersion bridgeOS_7_0			(Platform::bridgeOS, 0x00070000);
-static const PlatformVersion bridgeOS_8_0			(Platform::bridgeOS, 0x00080000);
-static const PlatformVersion bridgeOS_9_0			(Platform::bridgeOS, 0x00090000);
 static const PlatformVersion bridgeOS_Future		(Platform::bridgeOS, 0x10000000);
 
 static const PlatformVersion driverKit_19_0 		(Platform::driverKit, 0x00130000);
 static const PlatformVersion driverKit_20_0 		(Platform::driverKit, 0x00140000);
 static const PlatformVersion driverKit_21_0 		(Platform::driverKit, 0x00150000);
 static const PlatformVersion driverKit_22_0			(Platform::driverKit, 0x00160000);
-static const PlatformVersion driverKit_23_0			(Platform::driverKit, 0x00170000);
-static const PlatformVersion driverKit_24_0			(Platform::driverKit, 0x00180000);
 static const PlatformVersion driverKit_Future		(Platform::driverKit, 0x10000000);
-
 
 static const PlatformVersion sepOS_1_0				(Platform::sepOS, 0x00010000);
 
-
-static const PlatformVersion watchOS_sim_8_0		(Platform::watchOS_simulator, 0x00080000);
-static const PlatformVersion iOS_sim_15_0		    (Platform::iOS_simulator,     0x000F0000);
-static const PlatformVersion tvOS_sim_15_0		    (Platform::tvOS_simulator,    0x000F0000);
 
 // Platform Sets
 static const PlatformSet simulatorPlatforms ( {
@@ -300,8 +259,6 @@ static const PlatformSet simulatorPlatforms ( {
        Platform::tvOS_simulator,
        Platform::watchOS_simulator,
 } );
-
-
 
 //FIXME do we need to add simulatots to these?
 //FIXME Are the dates correct?
@@ -319,30 +276,22 @@ static const VersionSet version2019Fall ({mac10_15, iOS_13_0, watchOS_6_0, tvOS_
 static const VersionSet version2020Fall ({mac10_16, iOS_14_0, watchOS_7_0, tvOS_14_0, bridgeOS_5_0});
 
 static const VersionSet version2021Fall ({mac12_0, iOS_15_0, watchOS_8_0, tvOS_15_0, bridgeOS_6_0,
+		sepOS_1_0
 });
 
-static const VersionSet version2022Fall ({mac13_0, iOS_16_0, watchOS_9_0, tvOS_16_0, bridgeOS_7_0, sepOS_1_0,
+static const VersionSet version2022Fall ({mac13_0, iOS_16_0, watchOS_9_0, tvOS_16_0, bridgeOS_7_0,
+		sepOS_1_0
 });
 
-static const VersionSet version2024Fall ({mac15_0, iOS_18_0, watchOS_11_0, tvOS_18_0, bridgeOS_9_0, sepOS_1_0,
-});
 
-
-static const VersionSet supportsSplitSegV2 		({mac10_12, iOS_9_0, watchOS_2_0, tvOS_9_0, driverKit_20_0,
-});
-
+static const VersionSet supportsSplitSegV2 		({mac10_12, iOS_9_0, watchOS_2_0, tvOS_9_0, driverKit_20_0});
 // FIXME: Use the comment out line instead.
 static const VersionSet supportsLCBuildVersion 	({mac10_14, iOS_12_0, watchOS_5_0, tvOS_12_0, bridgeOS_1_0});
 
-static const VersionSet supportsPIE				({mac10_5, iOS_4_2,
-});
+static const VersionSet supportsPIE				({mac10_5, iOS_4_2});
 
 static const VersionSet supportsTLV  			({mac10_7, iOS_9_0});
-// simulator does not support chained fixups until iOS 15, watchOS 8, and tvOS 14
-static const VersionSet supportsChainedFixups 	({mac12_0, iOS_sim_15_0, iOS_13_4, watchOS_sim_8_0, watchOS_7_0, tvOS_sim_15_0, tvOS_14_0, bridgeOS_Future});
-
-static const VersionSet supportsConstClassRefs 	({mac14_4, iOS_17_4, watchOS_10_4, tvOS_17_4, bridgeOS_Future,
-});
+static const VersionSet supportsChainedFixups 	({mac12_0, iOS_13_4, watchOS_7_0, tvOS_14_0, bridgeOS_Future});
 
 // Forward declaration for bitcode support
 class Bitcode;
@@ -367,17 +316,6 @@ public:
 		virtual				~AtomHandler() {}
 		virtual void		doAtom(const class Atom&) = 0;
 		virtual void		doFile(const class File&) = 0;
-	};
-
-	class AtomSinkHandler: public AtomHandler {
-	public:
-		std::vector<const ld::Atom*> atoms;
-
-		virtual void	doAtom(const ld::Atom& atom) final {
-			atoms.push_back(&atom);
-		}
-
-		virtual void	doFile(const ld::File&) final {}
 	};
 
 	//
@@ -599,7 +537,6 @@ namespace dylib {
 				bool						willRemoved() const				{ return _dead; }
 				
 		virtual void						processIndirectLibraries(DylibHandler* handler, bool addImplicitDylibs) = 0;
-		virtual bool						indirectLibrariesProcessed() const = 0;
 		virtual bool						providedExportAtom() const = 0;
 		virtual const char*					parentUmbrella() const = 0;
 		virtual const std::vector<const char*>*	allowableClients() const = 0;
@@ -661,11 +598,11 @@ public:
 				typeLiteral4, typeLiteral8, typeLiteral16, typeConstants, typeTempLTO, typeTempAlias,
 				typeCString, typeNonStdCString, typeCStringPointer, typeUTF16Strings, typeCFString, typeObjC1Classes,
 				typeCFI, typeLSDA, typeDtraceDOF, typeUnwindInfo, typeObjCClassRefs, typeObjC2CategoryList, typeObjC2ClassList,
-				typeZeroFill, typeTentativeDefs, typeLazyPointer, typeStub, typeStubObjC, typeNonLazyPointer, typeDyldInfo, 
+				typeZeroFill, typeTentativeDefs, typeLazyPointer, typeStub, typeNonLazyPointer, typeDyldInfo, 
 				typeLazyDylibPointer, typeStubHelper, typeInitializerPointers, typeTerminatorPointers,
 				typeStubClose, typeLazyPointerClose, typeAbsoluteSymbols, typeThreadStarts, typeChainStarts,
 				typeTLVDefs, typeTLVZeroFill, typeTLVInitialValues, typeTLVInitializerPointers, typeTLVPointers,
-				typeFirstSection, typeLastContentSection, typeLastSection, typeDebug, typeSectCreate, typeInitOffsets, typeInterposing, typeRebaseRLE };
+				typeFirstSection, typeLastSection, typeDebug, typeSectCreate, typeInitOffsets, typeInterposing };
 
 
 					Section(const char* sgName, const char* sctName,
@@ -713,8 +650,6 @@ private:
 // Atom holding the reference where the fix-up (relocation) will be applied.
 //
 //
-#pragma clang diagnostic push
-#pragma clang diagnostic error "-Wpadded"
 struct Fixup 
 {
 	enum TargetBinding { bindingNone, bindingByNameUnbound, bindingDirectlyBound, bindingByContentBound, bindingsIndirectlyBound };
@@ -821,25 +756,12 @@ struct Fixup
 					kindStoreTargetAddressLittleEndianAuth64,	// kindSetTargetAddress + kindStoreLittleEndianAuth64
 					kindSetAuthData,
 #endif
-#if SUPPORT_ARCH_riscv32
-					kindStoreRISCVBranch20,
-					kindStoreRISCVhi20,
-					kindStoreRISCVlo12,
-					kindStoreRISCVhi20GOT,
-					kindStoreRISCVlo12GOT,
-					kindStoreRISCVhi20PCRel,
-					kindStoreRISCVlo12PCRel,
-					kindStoreRISCVhi20PCRelGOT,
-					kindStoreRISCVlo12PCRelGOT,
-					kindStoreRISCVlo12PCRelwasGOT,
-					kindStoreRISCVlo12wasGOT,
-#endif
 			};
 
 #if SUPPORT_ARCH_arm64e
 	struct AuthData {
 		// clang encodes the combination of the key bits as these values.
-		typedef enum : uint8_t {
+		typedef enum {
 			ptrauth_key_asia = 0,
 			ptrauth_key_asib = 1,
 			ptrauth_key_asda = 2,
@@ -869,7 +791,6 @@ struct Fixup
 	bool			contentAddendOnly : 1;
 	bool			contentDetlaToAddendOnly : 1;
 	bool			contentIgnoresAddend : 1;
-	uint32_t		unusedPadding : 13;
 	
 	typedef Fixup*		iterator;
 
@@ -896,12 +817,6 @@ struct Fixup
 		contentAddendOnly(false), contentDetlaToAddendOnly(false), contentIgnoresAddend(false) 
 			{ assert(name != NULL); u.name = name; }
 		
-	Fixup(uint32_t off, Cluster c, Kind k, bool weakIm, uint32_t slot) :
-		offsetInAtom(off), kind(k), clusterSize(c), weakImport(weakIm),
-		binding(Fixup::bindingsIndirectlyBound),
-		contentAddendOnly(false), contentDetlaToAddendOnly(false), contentIgnoresAddend(false)
-			{ u.bindingIndex = slot; }
-
 	Fixup(uint32_t off, Cluster c, Kind k, TargetBinding b, const char* name) :
 		offsetInAtom(off), kind(k), clusterSize(c), weakImport(false), binding(b),  
 		contentAddendOnly(false), contentDetlaToAddendOnly(false), contentIgnoresAddend(false) 
@@ -1120,7 +1035,7 @@ struct Fixup
 	union LOH_arm64 {
 		uint64_t	addend;
 		struct {
-			uint64_t	kind	:  6,
+			unsigned	kind	:  6,
 						count	:  2,	// 00 => 1 addr, 11 => 4 addrs
 						delta1 : 14,	// 16-bit delta, low 2 bits assumed zero
 						delta2 : 14,
@@ -1130,7 +1045,6 @@ struct Fixup
 	};
 	
 };
-#pragma clang diagnostic pop
 
 //
 // ld::Atom
@@ -1185,7 +1099,7 @@ public:
 	enum Definition { definitionRegular, definitionTentative, definitionAbsolute, definitionProxy };
 	enum Combine { combineNever, combineByName, combineByNameAndContent, combineByNameAndReferences };
 	enum ContentType { typeUnclassified, typeZeroFill, typeCString, typeCFI, typeLSDA, typeSectionStart, 
-					typeSectionEnd, typeBranchIsland, typeLazyPointer, typeStub, typeNonLazyPointer,
+					typeSectionEnd, typeBranchIsland, typeLazyPointer, typeStub, typeNonLazyPointer, 
 					typeLazyDylibPointer, typeStubHelper, typeInitializerPointers, typeTerminatorPointers,
 					typeLTOtemporary, typeResolver,
 					typeTLV, typeTLVZeroFill, typeTLVInitialValue, typeTLVInitializerPointers, typeTLVPointer };
@@ -1242,8 +1156,6 @@ public:
 	virtual									~Atom() {}
 
 	const Section&							section() const				{ return *_section; }
-	bool									hasOutputSymbolIndex() const { return _outputSymbolIndex != UINT32_MAX; }
-	uint32_t								outputSymbolIndex() const   { return _outputSymbolIndex; }
 	Definition								definition() const			{ return _definition; }
 	Combine									combine() const				{ return _combine; }
 	Scope									scope() const				{ return _scope; }
@@ -1263,7 +1175,6 @@ public:
 	bool									live() const				{ return _live; }
 	uint8_t									machoSection() const		{ assert(_machoSection != 0); return _machoSection; }
 
-	void									setOutputSymbolIndex(uint32_t index) const { _outputSymbolIndex = index; }
 	void									setScope(Scope s)			{ _scope = s; }
 	void									setSymbolTableInclusion(SymbolTableInclusion i)			
 																		{ _symbolTableInclusion = i; }
@@ -1320,8 +1231,7 @@ public:
 	virtual LineInfo::iterator				endLineInfo() const { return NULL; }
 											
 											void setAttributesFromAtom(const Atom& a) { 
-													_section = a._section;
-													_outputSymbolIndex = a._outputSymbolIndex;
+													_section = a._section; 
 													_alignmentModulus = a._alignmentModulus;
 													_alignmentPowerOf2 = a._alignmentPowerOf2;
 													_definition = a._definition;
@@ -1354,7 +1264,6 @@ protected:
 
 	const Section *						_section;
 	uint64_t							_address;
-	mutable uint32_t					_outputSymbolIndex = UINT32_MAX;
 	uint16_t							_alignmentModulus;
 	uint8_t								_alignmentPowerOf2;
 	Definition							_definition : 2;
@@ -1384,6 +1293,24 @@ public:
 	virtual const char*			indirectName(uint32_t bindingIndex) const = 0;
 	virtual const ld::Atom*		indirectAtom(uint32_t bindingIndex) const = 0;
 };
+
+
+
+// utility classes for using std::unordered_map with c-strings
+struct CStringHash {
+	size_t operator()(const char* __s) const {
+		size_t __h = 0;
+		for ( ; *__s; ++__s)
+			__h = 5 * __h + *__s;
+		return __h;
+	};
+};
+struct CStringEquals
+{
+	bool operator()(const char* left, const char* right) const { return (strcmp(left, right) == 0); }
+};
+
+typedef	std::unordered_set<const char*, ld::CStringHash, ld::CStringEquals>  CStringSet;
 
 typedef enum {
 	ClassROSigningMismatch = -2,
@@ -1415,6 +1342,8 @@ public:
 		bool							hasLocalRelocs;
 		bool							hasExternalRelocs;
 	};
+	
+	typedef std::map<const ld::Atom*, FinalSection*>	AtomToSection;		
 
 	virtual uint64_t					assignFileOffsets() = 0;
 	virtual void						setSectionSizesAndAlignments() = 0;
@@ -1424,7 +1353,6 @@ public:
 										Internal() : bundleLoader(NULL),
 											entryPoint(NULL), classicBindingHelper(NULL),
 											lazyBindingHelper(NULL), compressedFastBinderProxy(NULL),
-											objcMsgSendProxy(NULL), objcMsgSendSlot(0),
 											hasObjC(false), objcClassROPointerSigning(ClassROSigningUnknown),
 											hasArm64eABIVersion(false), arm64eABIVersion(0),
 											swiftVersion(0), swiftLanguageVersion(0),
@@ -1443,9 +1371,9 @@ public:
 	std::vector<ld::dylib::File*>				dylibs;
 	std::vector<std::string>					archivePaths;
 	std::vector<ld::relocatable::File::Stab>	stabs;
-	// Use ordered sets so that the way unprocessed libraries and frameworks are added is deterministic.
-	CStringOrderedSet							unprocessedLinkerOptionLibraries;
-	CStringOrderedSet							unprocessedLinkerOptionFrameworks;
+	AtomToSection								atomToSection;		
+	CStringSet									unprocessedLinkerOptionLibraries;
+	CStringSet									unprocessedLinkerOptionFrameworks;
 	CStringSet									linkerOptionNeededLibraries;
 	CStringSet									linkerOptionNeededFrameworks;
 	CStringSet									linkerOptionLibraries;
@@ -1464,9 +1392,6 @@ public:
 	const Atom*									classicBindingHelper;
 	const Atom*									lazyBindingHelper;
 	const Atom*									compressedFastBinderProxy;
-	const Atom*									rebaseRLEAtom;
-	const Atom*									objcMsgSendProxy;
-	uint32_t									objcMsgSendSlot;
 	bool										hasObjC;
 	ClassROSigning								objcClassROPointerSigning;
 	bool										hasArm64eABIVersion;
